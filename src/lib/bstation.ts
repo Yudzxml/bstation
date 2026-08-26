@@ -676,9 +676,9 @@ async function detail(url: string): Promise<BstationResult> {
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     return {
-      author: 'Yudzxml (Fixed)',
+      author: 'Yudzxml',
       success: false,
-      source: 'Bstation/Bilibili Web Parser',
+      source: 'Bstation',
       timestamp: new Date().toISOString(),
       meta: { title: '', description: '', keywords: '', ogImage: '', canonicalUrl: '', videoId: null },
       data: {},
@@ -786,9 +786,9 @@ function parse(htmlContent: string): BstationResult {
     }
 
     return {
-      author: 'Yudzxml (Fixed)',
+      author: 'Yudzxml',
       success: !!initialState,
-      source: 'Bstation/Bilibili Web Parser',
+      source: 'Bstation',
       timestamp: new Date().toISOString(),
       meta: basicMeta,
       data: detailedData
@@ -796,9 +796,9 @@ function parse(htmlContent: string): BstationResult {
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     return {
-      author: 'Yudzxml (Fixed)',
+      author: 'Yudzxml',
       success: false,
-      source: 'Bstation/Bilibili Web Parser',
+      source: 'Bstation',
       timestamp: new Date().toISOString(),
       meta: { title: '', description: '', keywords: '', ogImage: '', canonicalUrl: '', videoId: null },
       data: {},

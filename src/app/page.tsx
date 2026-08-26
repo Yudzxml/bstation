@@ -882,7 +882,7 @@ export default function Home() {
             <span>Bstation Stream</span>
           </div>
           <span className="text-xs text-white/20">
-            Powered by dash.js
+            Powered by Yudzxml
           </span>
         </div>
       </footer>

@@ -18,9 +18,6 @@ export const metadata: Metadata = {
   description: "Stream and watch bilibili.tv (Bstation) videos in your browser with DASH streaming, quality control, and download support.",
   keywords: ["Bstation", "bilibili.tv", "video streaming", "DASH", "video player"],
   authors: [{ name: "Bstation Stream" }],
-  icons: {
-    icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
-  },
   openGraph: {
     title: "Bstation - Watch Videos",
     description: "Stream and watch bilibili.tv videos with quality control.",
