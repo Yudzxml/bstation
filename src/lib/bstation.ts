@@ -27,6 +27,7 @@ interface AudioStream {
   backupUrl: string | null;
   codec: string;
   size: number;
+  isDash: boolean;
   segmentBase?: {
     range: string;
     indexRange: string;
@@ -264,7 +265,7 @@ interface PlayinfoData {
 function extractPlayinfoFromHtml(html: string): PlayinfoData | null {
   try {
     const $ = cheerio.load(html);
-    let playinfoBase64: string | null = null;
+    let playinfoBase64: string = '';
 
     $('script').each((_i, el) => {
       const content = $(el).html() || '';
@@ -288,7 +289,7 @@ function extractPlayinfoFromHtml(html: string): PlayinfoData | null {
     let decoded: string;
     try {
       // Normalize URL-safe base64 to standard
-      const normalized = playinfoBase64.replace(/-/g, '+').replace(/_/g, '/');
+      const normalized = (playinfoBase64 as string).replace(/-/g, '+').replace(/_/g, '/');
       // Add padding if needed
       const padded = normalized.padEnd(normalized.length + (4 - normalized.length % 4) % 4, '=');
       decoded = Buffer.from(padded, 'base64').toString('utf-8');
@@ -315,13 +316,18 @@ function extractPlayinfoFromNextData(html: string): PlayinfoData | null {
     $('script#__NEXT_DATA__').each((_i, el) => {
       const content = $(el).html() || '';
       try {
-        nextData = JSON.parse(content);
+        const parsed = JSON.parse(content);
+        if (parsed && typeof parsed === 'object') {
+          nextData = parsed as Record<string, unknown>;
+        }
       } catch { /* ignore */ }
       return false;
     });
 
-    if (!nextData?.props?.pageProps) return null;
-    const pageProps = nextData.props.pageProps as Record<string, unknown>;
+    const pageProps = nextData
+      ? (((nextData as Record<string, unknown>)['props'] as Record<string, unknown> | null)?.['pageProps'] as Record<string, unknown> | null)
+      : null;
+    if (!pageProps) return null;
     
     // Try multiple possible paths for playInfo in __NEXT_DATA__
     const paths = [
@@ -484,6 +490,7 @@ function parsePlayinfoResponse(data: Record<string, unknown>): PlayinfoData | nu
         backupUrl: null,
         codec: (a.codecs as string) || '',
         size: (a.size as number) || 0,
+        isDash: !!segBase,
         segmentBase: segBase ? {
           range: (segBase.range as string) || '0-991',
           indexRange: (segBase.index_range as string) || '992-1239',
@@ -700,59 +707,64 @@ function parse(htmlContent: string): BstationResult {
     const idMatch = basicMeta.canonicalUrl.match(/\/video\/(\d+)/);
     if (idMatch) basicMeta.videoId = idMatch[1];
 
-    let initialState: Record<string, unknown> | null = null;
-    $('script').each((_i, el) => {
-      const content = $(el).html() || '';
-      if (content.includes('__initialState')) {
-        const patterns = ['window.__initialState', '__initialState', 'self.__INITIAL_STATE__'];
-        for (const pattern of patterns) {
-          const extracted = extractIifeObject(content, pattern);
-          if (extracted) {
-            initialState = extracted as Record<string, unknown>;
-            return false;
+    // Extract __initialState from script tags
+    const initialState = (() => {
+      let result: Record<string, unknown> | null = null;
+      $('script').each((_i, el) => {
+        const content = $(el).html() || '';
+        if (content.includes('__initialState')) {
+          const patterns = ['window.__initialState', '__initialState', 'self.__INITIAL_STATE__'];
+          for (const pattern of patterns) {
+            const extracted = extractIifeObject(content, pattern);
+            if (extracted) {
+              result = extracted as Record<string, unknown>;
+              return false;
+            }
           }
         }
-      }
-    });
+      });
+      return result;
+    })();
 
     const detailedData: BstationResult['data'] = {};
 
     if (initialState) {
-      const ugc = (initialState.ugc || {}) as Record<string, unknown>;
-      const archive = (ugc.archive || {}) as Record<string, unknown>;
-      const archiveStat = (archive.stat || {}) as Record<string, unknown>;
-      const uploader = archive.uploader as Record<string, unknown> | undefined;
-      const playRecommend = (initialState.playRecommend || {}) as Record<string, unknown>;
-      const recommends = (playRecommend.recommends || []) as Array<Record<string, unknown>>;
-      const rights = archive.rights as Record<string, unknown> | undefined;
+      const state = initialState as Record<string, unknown>;
+      const ugc = (state['ugc'] || {}) as Record<string, unknown>;
+      const archive = (ugc['archive'] || {}) as Record<string, unknown>;
+      const archiveStat = (archive['stat'] || {}) as Record<string, unknown>;
+      const uploader = archive['uploader'] as Record<string, unknown> | undefined;
+      const playRecommend = (state['playRecommend'] || {}) as Record<string, unknown>;
+      const recommends = (playRecommend['recommends'] || []) as Array<Record<string, unknown>>;
+      const rights = archive['rights'] as Record<string, unknown> | undefined;
 
-      const rawAid = (ugc.aid as string) || (archive.aid as string) || '0';
+      const rawAid = (ugc['aid'] as string) || (archive['aid'] as string) || '0';
 
       detailedData.videoInfo = {
         aid: parseInt(rawAid, 10) || 0,
-        title: ((archive.title as string) || basicMeta.title) || '',
-        cover: ((archive.cover as string) || basicMeta.ogImage) || '',
-        desc: ((archive.desc as string) || basicMeta.description) || '',
-        duration: (archive.duration as number) || 0,
-        pubDate: (archive.pub_date as string) || '',
-        formattedPubDate: (archive.formatted_pub_date as string) || '',
+        title: ((archive['title'] as string) || basicMeta.title) || '',
+        cover: ((archive['cover'] as string) || basicMeta.ogImage) || '',
+        desc: ((archive['desc'] as string) || basicMeta.description) || '',
+        duration: (archive['duration'] as number) || 0,
+        pubDate: (archive['pub_date'] as string) || '',
+        formattedPubDate: (archive['formatted_pub_date'] as string) || '',
         ...(rights ? { rights } : {})
       };
 
       if (uploader) {
         detailedData.uploader = {
-          mid: parseInt(String(uploader.mid), 10) || 0,
-          name: (uploader.name as string) || '',
-          avatar: (uploader.avatar as string) || '',
-          follower: (archiveStat.followers as string) || (archiveStat.fans as string) || '0'
+          mid: parseInt(String(uploader['mid']), 10) || 0,
+          name: (uploader['name'] as string) || '',
+          avatar: (uploader['avatar'] as string) || '',
+          follower: (archiveStat['followers'] as string) || (archiveStat['fans'] as string) || '0'
         };
       }
 
       detailedData.stats = {
-        views: (archiveStat.views as string) || '0',
-        likes: (archiveStat.like_count as string) || '0',
-        likeState: (archiveStat.like_state as number) || 0,
-        arcs: (archiveStat.arcs as string) || ''
+        views: (archiveStat['views'] as string) || '0',
+        likes: (archiveStat['like_count'] as string) || '0',
+        likeState: (archiveStat['like_state'] as number) || 0,
+        arcs: (archiveStat['arcs'] as string) || ''
       };
 
       // Streaming will be filled by multi-strategy in detail()

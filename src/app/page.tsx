@@ -160,8 +160,7 @@ export default function Home() {
       setPlayerLoading(true);
       if (playerRef.current) playerRef.current.reset();
 
-      const dashjsModule = await import('dashjs');
-      const dashjsLib = dashjsModule.default || dashjsModule;
+      const dashjsLib = await import('dashjs');
       if (destroyed) return;
 
       const player = dashjsLib.MediaPlayer().create();
@@ -169,15 +168,19 @@ export default function Home() {
 
       player.on(dashjsLib.MediaPlayer.events.STREAM_INITIALIZED, () => {
         if (destroyed) return;
-        const bitrates = player.getBitrateInfoListFor('video');
-        if (bitrates && bitrates.length > 0) {
-          setQualityList(bitrates.map((b, idx) => ({
-            index: idx,
-            label: `${b.height}P`,
-            bitrate: b.bitrate,
-            width: b.width,
-            height: b.height,
-          })));
+        // dashjs v5: use getTracksFor to get quality info
+        const tracks = player.getTracksFor('video');
+        if (tracks && tracks.length > 0) {
+          setQualityList(tracks.map((t: unknown, idx: number) => {
+            const info = t as Record<string, unknown>;
+            return {
+              index: idx,
+              label: `${info.height || '?'}P`,
+              bitrate: (info.bitrate as number) || 0,
+              width: (info.width as number) || 0,
+              height: (info.height as number) || 0,
+            };
+          }));
         }
         setPlayerLoading(false);
       });
@@ -225,13 +228,20 @@ export default function Home() {
     if (!playerRef.current) return;
     if (value === 'auto') {
       playerRef.current.updateSettings({
-        streaming: { abr: { autoSwitchQuality: true } },
-      });
+        streaming: { abr: { autoSwitchBitrate: { video: true } } },
+      } as Parameters<typeof playerRef.current.updateSettings>[0]);
     } else {
       playerRef.current.updateSettings({
-        streaming: { abr: { autoSwitchQuality: false } },
-      });
-      playerRef.current.setQualityFor('video', parseInt(value, 10));
+        streaming: { abr: { autoSwitchBitrate: { video: false } } },
+      } as Parameters<typeof playerRef.current.updateSettings>[0]);
+      const qualityIndex = parseInt(value, 10);
+      // dashjs v5: switch quality by track index
+      const tracks = playerRef.current.getTracksFor('video');
+      if (tracks && tracks[qualityIndex]) {
+        playerRef.current.updateSettings({
+          streaming: { abr: { initialRepresentation: { video: String(tracks[qualityIndex].id) } } },
+        } as Parameters<typeof playerRef.current.updateSettings>[0]);
+      }
     }
   }, []);
 
@@ -829,9 +839,9 @@ export default function Home() {
                             loading="lazy"
                           />
                           <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
-                          {rec.duration > 0 && (
+                          {Number(rec.duration) > 0 && (
                             <span className="absolute bottom-1.5 right-1.5 bg-black/80 text-white text-[10px] font-medium px-1.5 py-0.5 rounded">
-                              {formatDuration(rec.duration)}
+                              {formatDuration(Number(rec.duration))}
                             </span>
                           )}
                           <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200">
