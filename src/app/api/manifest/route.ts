@@ -68,10 +68,20 @@ export async function GET(request: NextRequest) {
     seenAudio.add(a.qualityId);
 
     const proxyUrl = `${host}/api/proxy?url=${encodeURIComponent(a.baseUrl)}&referer=${encodeURIComponent(videoPageUrl)}`;
-    audioReps += `
+    if (a.isDash && a.segmentBase) {
+      audioReps += `
+        <Representation id="a${a.qualityId}" bandwidth="${a.bandwidth}" codecs="${escapeXml(a.codec)}">
+          <SegmentBase indexRange="${escapeXml(a.segmentBase.indexRange)}">
+            <Initialization range="${escapeXml(a.segmentBase.range)}"/>
+          </SegmentBase>
+          <BaseURL>${escapeXml(proxyUrl)}</BaseURL>
+        </Representation>`;
+    } else {
+      audioReps += `
         <Representation id="a${a.qualityId}" bandwidth="${a.bandwidth}" codecs="${escapeXml(a.codec)}">
           <BaseURL>${escapeXml(proxyUrl)}</BaseURL>
         </Representation>`;
+    }
   }
 
   const mpd = `<?xml version="1.0" encoding="utf-8"?>

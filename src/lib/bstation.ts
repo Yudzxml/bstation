@@ -27,6 +27,10 @@ interface AudioStream {
   backupUrl: string | null;
   codec: string;
   size: number;
+  segmentBase?: {
+    range: string;
+    indexRange: string;
+  };
 }
 
 interface BstationResult {
@@ -411,7 +415,25 @@ function extractPlayinfoFromInitialState(initialState: Record<string, unknown>):
 }
 
 /**
- * Parse playinfo response data into our standard format
+ * Resolve a URL from baseUrl or backupUrl (which can be string or string[])
+ */
+function resolveStreamUrl(vr: Record<string, unknown>): string {
+  const url = (vr.url as string) || '';
+  if (url) return url;
+  
+  const backup = vr.backup_url;
+  if (!backup) return '';
+  
+  // backup_url can be a string or an array of strings
+  if (typeof backup === 'string' && backup) return backup;
+  if (Array.isArray(backup) && backup.length > 0) return backup[0] as string;
+  
+  return '';
+}
+
+/**
+ * Parse playinfo response data into our standard format.
+ * Filters out streams with no valid URL.
  */
 function parsePlayinfoResponse(data: Record<string, unknown>): PlayinfoData | null {
   try {
@@ -420,19 +442,22 @@ function parsePlayinfoResponse(data: Record<string, unknown>): PlayinfoData | nu
     const audioList = (playurl.audio_resource || playurl.audio || []) as Array<Record<string, unknown>>;
     const durationMs = (playurl.duration as number) || 0;
 
-    const videos: VideoStream[] = videoList.map(v => {
+    const videos: VideoStream[] = [];
+    for (const v of videoList) {
       const vr = (v.video_resource || v) as Record<string, unknown>;
       const si = (v.stream_info || {}) as Record<string, unknown>;
-      const url = (vr.url as string) || '';
+      const url = resolveStreamUrl(vr);
+      if (!url) continue; // Skip streams with no URL at all
+      
       const segBase = vr.segment_base as Record<string, unknown> | undefined;
-      return {
+      videos.push({
         qualityId: (vr.quality as number) || 0,
         qualityLabel: (si.desc_words as string) || getQualityLabel(vr.quality as number),
         codec: (vr.codecs as string) || '',
         mimeType: (vr.mime_type as string) || '',
         bandwidth: (vr.bandwidth as number) || 0,
         baseUrl: url,
-        backupUrl: (vr.backup_url as string) || null,
+        backupUrl: null,
         width: (vr.width as number) || 0,
         height: (vr.height as number) || 0,
         frameRate: (vr.frame_rate as string) || '',
@@ -442,18 +467,29 @@ function parsePlayinfoResponse(data: Record<string, unknown>): PlayinfoData | nu
           range: (segBase.range as string) || '0-991',
           indexRange: (segBase.index_range as string) || '992-1239',
         } : undefined,
-      };
-    });
+      });
+    }
 
-    const audios: AudioStream[] = audioList.map(a => ({
-      qualityId: (a.quality as number) || 0,
-      bandwidth: (a.bandwidth as number) || 0,
-      mimeType: (a.mime_type as string) || '',
-      baseUrl: (a.url as string) || '',
-      backupUrl: (a.backup_url as string) || null,
-      codec: (a.codecs as string) || '',
-      size: (a.size as number) || 0
-    }));
+    const audios: AudioStream[] = [];
+    for (const a of audioList) {
+      const url = resolveStreamUrl(a);
+      if (!url) continue; // Skip audios with no URL
+      
+      const segBase = a.segment_base as Record<string, unknown> | undefined;
+      audios.push({
+        qualityId: (a.quality as number) || 0,
+        bandwidth: (a.bandwidth as number) || 0,
+        mimeType: (a.mime_type as string) || '',
+        baseUrl: url,
+        backupUrl: null,
+        codec: (a.codecs as string) || '',
+        size: (a.size as number) || 0,
+        segmentBase: segBase ? {
+          range: (segBase.range as string) || '0-991',
+          indexRange: (segBase.index_range as string) || '992-1239',
+        } : undefined,
+      });
+    }
 
     return {
       duration: Math.round(durationMs / 1000),

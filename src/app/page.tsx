@@ -141,15 +141,23 @@ export default function Home() {
       return;
     }
 
+    // Don't initialize player if no streams available
+    const hasStreams = result.data.streaming &&
+      result.data.streaming.videos.length > 0 &&
+      result.data.streaming.audios.length > 0;
+    if (!hasStreams) {
+      return;
+    }
+
     const aid = result.data.videoInfo.aid;
     const manifestUrl = `/api/manifest?aid=${aid}`;
 
-    setPlayerLoading(true);
     let destroyed = false;
     let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
     const timer = setTimeout(async () => {
       if (!videoRef.current || destroyed) return;
+      setPlayerLoading(true);
       if (playerRef.current) playerRef.current.reset();
 
       const dashjsModule = await import('dashjs');
@@ -502,13 +510,27 @@ export default function Home() {
             >
               {/* ---- VIDEO PLAYER ---- */}
               <div className="relative w-full aspect-video rounded-2xl overflow-hidden bg-black shadow-2xl shadow-black/50">
-                <video
-                  ref={videoRef}
-                  className="w-full h-full"
-                  controls
-                  playsInline
-                  aria-label={`Playing: ${videoInfo.title}`}
-                />
+                {streaming && streaming.videos.length > 0 && streaming.audios.length > 0 ? (
+                  <video
+                    ref={videoRef}
+                    className="w-full h-full"
+                    controls
+                    playsInline
+                    aria-label={`Playing: ${videoInfo.title}`}
+                  />
+                ) : (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center p-6">
+                    <div className="h-14 w-14 rounded-full bg-white/[0.06] flex items-center justify-center">
+                      <Film className="h-7 w-7 text-white/30" />
+                    </div>
+                    <div>
+                      <p className="text-white/70 font-medium text-sm">Stream tidak tersedia</p>
+                      <p className="text-white/40 text-xs mt-1 max-w-sm">
+                        {streaming?.note || 'Video ini mungkin dibatasi wilayah, memerlukan login, atau kualitas yang tersedia tidak memiliki URL stream.'}
+                      </p>
+                    </div>
+                  </div>
+                )}
                 {/* Player loading overlay */}
                 <AnimatePresence>
                   {playerLoading && (
@@ -586,6 +608,7 @@ export default function Home() {
               <Separator className="bg-white/[0.06]" />
 
               {/* ---- QUALITY + DOWNLOAD BAR ---- */}
+              {streaming && streaming.videos.length > 0 && streaming.audios.length > 0 && (
               <div className="flex flex-wrap items-center gap-3">
                 {/* Quality Selector */}
                 <Select value={selectedQuality} onValueChange={handleQualityChange}>
@@ -700,6 +723,7 @@ export default function Home() {
                   </TooltipContent>
                 </Tooltip>
               </div>
+              )}
 
               {/* ---- DESCRIPTION ---- */}
               {videoInfo.desc && (
