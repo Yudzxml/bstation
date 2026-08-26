@@ -133,6 +133,9 @@ export default function Home() {
   }, [loadVideo]);
 
   // ==================== DASH Player ====================
+  // Use ref for toast to avoid re-triggering the player effect
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
 
   useEffect(() => {
     if (pageState !== 'player' || !result?.data?.videoInfo?.aid || !videoRef.current) {
@@ -143,78 +146,60 @@ export default function Home() {
     const manifestUrl = `/api/manifest?aid=${aid}`;
 
     setPlayerLoading(true);
+    let destroyed = false;
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
-    // Small delay to ensure DOM is ready
     const timer = setTimeout(async () => {
-      if (!videoRef.current) return;
+      if (!videoRef.current || destroyed) return;
+      if (playerRef.current) playerRef.current.reset();
 
-      // Destroy previous player
-      if (playerRef.current) {
-        playerRef.current.reset();
-      }
-
-      // Dynamic import to avoid SSR window reference error
       const dashjsModule = await import('dashjs');
       const dashjsLib = dashjsModule.default || dashjsModule;
+      if (destroyed) return;
 
       const player = dashjsLib.MediaPlayer().create();
-
-      // CDN has Access-Control-Allow-Origin: * so browser fetches directly
-      // No custom headers needed - signed URLs + user's IP = works
-      player.initialize(videoRef.current, manifestUrl, true);
+      player.initialize(videoRef.current!, manifestUrl, true);
 
       player.on(dashjsLib.MediaPlayer.events.STREAM_INITIALIZED, () => {
+        if (destroyed) return;
         const bitrates = player.getBitrateInfoListFor('video');
         if (bitrates && bitrates.length > 0) {
-          const qualities = bitrates.map((b, idx) => ({
+          setQualityList(bitrates.map((b, idx) => ({
             index: idx,
             label: `${b.height}P`,
             bitrate: b.bitrate,
             width: b.width,
             height: b.height,
-          }));
-          setQualityList(qualities);
+          })));
         }
         setPlayerLoading(false);
       });
 
       player.on(dashjsLib.MediaPlayer.events.ERROR, (e: unknown) => {
+        if (destroyed) return;
         const err = e as { error?: { message?: string } };
         setPlayerLoading(false);
-        toast({
+        toastRef.current({
           title: 'Stream gagal diputar',
           description: err?.error?.message || 'Gagal memuat stream. Coba video lain atau coba lagi nanti.',
           variant: 'destructive',
         });
       });
 
-      // Fallback: if STREAM_INITIALIZED never fires
-      const fallbackTimer = setTimeout(() => {
+      fallbackTimer = setTimeout(() => {
+        if (destroyed) return;
         setPlayerLoading(false);
-        const bitrates = player.getBitrateInfoListFor('video');
-        if (bitrates && bitrates.length > 0) {
-          const qualities = bitrates.map((b, idx) => ({
-            index: idx,
-            label: `${b.height}P`,
-            bitrate: b.bitrate,
-            width: b.width,
-            height: b.height,
-          }));
-          setQualityList(qualities);
-        }
-      }, 10000);
+      }, 12000);
 
       playerRef.current = player;
-
-      return () => {
-        clearTimeout(fallbackTimer);
-      };
     }, 100);
 
     return () => {
+      destroyed = true;
       clearTimeout(timer);
+      if (fallbackTimer) clearTimeout(fallbackTimer);
     };
-  }, [pageState, result, toast]);
+  }, [pageState, result]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -694,6 +679,25 @@ export default function Home() {
                   </TooltipTrigger>
                   <TooltipContent side="bottom" className="bg-zinc-800 border-zinc-700 text-zinc-200">
                     Download highest quality
+                  </TooltipContent>
+                </Tooltip>
+
+                {/* Open on bilibili.tv (fallback) */}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-10 px-4 text-white/50 hover:text-emerald-400 hover:bg-emerald-500/10 border border-white/10 hover:border-emerald-500/30 rounded-lg gap-2 transition-all"
+                      onClick={() => window.open(url, '_blank')}
+                      aria-label="Watch on bilibili.tv"
+                    >
+                      <Tv className="h-4 w-4" />
+                      <span className="hidden sm:inline">bilibili.tv</span>
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="bg-zinc-800 border-zinc-700 text-zinc-200">
+                    Watch on bilibili.tv
                   </TooltipContent>
                 </Tooltip>
               </div>

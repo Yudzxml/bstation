@@ -74,7 +74,7 @@ export async function GET(request: NextRequest) {
   }
 
   const mpd = `<?xml version="1.0" encoding="utf-8"?>
-<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" minBufferTime="PT2S" profiles="urn:mpeg:dash:profile:isoff-main:2011,urn:mpeg:dash:profile:isoff-live:2011" type="static" mediaPresentationDuration="PT${durationSec}S">
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" minBufferTime="PT2S" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011" type="static" mediaPresentationDuration="PT${durationSec}S">
   <Period>
     <AdaptationSet mimeType="video/mp4" contentType="video" startWithSAP="1">${videoReps}
     </AdaptationSet>
