@@ -8,21 +8,9 @@ import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
-  Search,
-  Play,
-  User,
-  Eye,
-  Heart,
-  Share2,
-  Download,
-  Copy,
-  Check,
-  AlertCircle,
-  Film,
-  Music,
-  Info,
-  Video,
-  FolderOpen
+  Search, Play, User, Eye, Heart, Download,
+  Copy, Check, AlertCircle, Film, Music,
+  Info, Video, ExternalLink
 } from 'lucide-react';
 import type { BstationResult } from '@/lib/bstation';
 
@@ -38,11 +26,9 @@ export default function Home() {
     setLoading(true);
     setError(null);
     setResult(null);
-
     try {
       const res = await fetch(`/api/bstation?url=${encodeURIComponent(url.trim())}`);
       const data: BstationResult = await res.json();
-
       if (!data.success) {
         setError(data.error || data.message || 'Gagal mem-parse video.');
       } else {
@@ -68,8 +54,21 @@ export default function Home() {
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
-  const hasStreamingUrls = result?.data.streaming &&
-    result.data.streaming.videos.length > 0;
+  const formatSize = (bytes: number) => {
+    if (!bytes) return '';
+    if (bytes >= 1_073_741_824) return `${(bytes / 1_073_741_824).toFixed(1)} GB`;
+    if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(1)} MB`;
+    if (bytes >= 1_024) return `${(bytes / 1_024).toFixed(1)} KB`;
+    return `${bytes} B`;
+  };
+
+  const formatBandwidth = (bw: number) => {
+    if (!bw) return '';
+    return `${Math.round(bw / 1000)}kbps`;
+  };
+
+  const streaming = result?.data.streaming;
+  const hasStreams = streaming && (streaming.videos.length > 0 || streaming.audios.length > 0);
 
   return (
     <div className="min-h-screen flex flex-col bg-gradient-to-b from-background to-muted/30">
@@ -163,12 +162,13 @@ export default function Home() {
                   <Check className="h-5 w-5 text-emerald-500 mt-0.5 shrink-0" />
                   <div>
                     <p className="font-medium text-emerald-700 dark:text-emerald-400">
-                      3 Bug Diperbaiki — Sekarang Work!
+                      4 Bug Diperbaiki — Full Working!
                     </p>
                     <ul className="text-xs text-emerald-600/80 dark:text-emerald-400/80 mt-1.5 space-y-0.5 list-disc list-inside">
-                      <li><strong>Bug #1</strong>: Class name <code className="bg-emerald-100 dark:bg-emerald-900 px-1 rounded text-[10px]">BstationParser</code> tidak ada → diganti function langsung</li>
-                      <li><strong>Bug #2</strong>: Regex IIFE gagal extract <code className="bg-emerald-100 dark:bg-emerald-900 px-1 rounded text-[10px]">__initialState</code> → evaluasi full IIFE expression</li>
-                      <li><strong>Bug #3</strong>: Path <code className="bg-emerald-100 dark:bg-emerald-900 px-1 rounded text-[10px]">ugc.stat</code> salah → diperbaiki ke <code className="bg-emerald-100 dark:bg-emerald-900 px-1 rounded text-[10px]">ugc.archive.stat</code></li>
+                      <li><strong>Bug #1</strong>: Class name <code className="bg-emerald-100 dark:bg-emerald-900 px-1 rounded text-[10px]">BstationParser</code> tidak ada</li>
+                      <li><strong>Bug #2</strong>: Regex IIFE gagal extract <code className="bg-emerald-100 dark:bg-emerald-900 px-1 rounded text-[10px]">__initialState</code></li>
+                      <li><strong>Bug #3</strong>: Path <code className="bg-emerald-100 dark:bg-emerald-900 px-1 rounded text-[10px]">ugc.stat</code> salah → <code className="bg-emerald-100 dark:bg-emerald-900 px-1 rounded text-[10px]">ugc.archive.stat</code></li>
+                      <li><strong>Bug #4</strong>: Streaming URLs → pakai PlayURL API <code className="bg-emerald-100 dark:bg-emerald-900 px-1 rounded text-[10px]">/intl/gateway/web/playurl</code></li>
                     </ul>
                   </div>
                 </div>
@@ -201,10 +201,7 @@ export default function Home() {
                         </Badge>
                       )}
                       {result.data.videoInfo.formattedPubDate && (
-                        <Badge variant="outline">{result.data.videoInfo.formattedPubDate}</Badge>
-                      )}
-                      {result.data.videoInfo.pubDate && (
-                        <Badge variant="outline">{result.data.videoInfo.pubDate}</Badge>
+                        <Badge variant="outline">{result.data.videoInfo.formattedPubDate.split('T')[0]}</Badge>
                       )}
                       <Badge variant="outline">AID: {result.data.videoInfo.aid}</Badge>
                     </div>
@@ -261,100 +258,145 @@ export default function Home() {
             </Card>
 
             {/* Streaming Tabs */}
-            {result.data.streaming && (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Download className="h-5 w-5" />
-                    Streaming URLs
-                  </CardTitle>
-                  {hasStreamingUrls ? (
-                    <CardDescription>
-                      {result.data.streaming.videos.length} video streams, {result.data.streaming.audios.length} audio streams
-                    </CardDescription>
-                  ) : null}
-                </CardHeader>
-                <CardContent>
-                  {!hasStreamingUrls ? (
-                    <div className="flex items-start gap-3 p-4 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900">
-                      <Info className="h-5 w-5 text-amber-500 mt-0.5 shrink-0" />
-                      <div>
-                        <p className="font-medium text-amber-700 dark:text-amber-400 text-sm">Streaming URLs tidak tersedia</p>
-                        <p className="text-xs text-amber-600/80 dark:text-amber-400/80 mt-1">
-                          Bilibili.tv hanya menyediakan playUrl melalui API client-side yang membutuhkan autentikasi. Data streaming tidak tersedia via server-side scraping.
-                        </p>
-                        {result.data.streaming.note && (
-                          <p className="text-xs text-muted-foreground mt-2 italic">
-                            {result.data.streaming.note}
-                          </p>
-                        )}
-                      </div>
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Download className="h-5 w-5" />
+                  Streaming URLs
+                </CardTitle>
+                {hasStreams && (
+                  <CardDescription>
+                    {streaming!.videos.length} video streams, {streaming!.audios.length} audio streams
+                    {streaming!.duration > 0 && ` · Duration: ${formatDuration(Math.floor(streaming!.duration / 1000))}`}
+                  </CardDescription>
+                )}
+              </CardHeader>
+              <CardContent>
+                {!hasStreams ? (
+                  <div className="flex items-start gap-3 p-4 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900">
+                    <Info className="h-5 w-5 text-amber-500 mt-0.5 shrink-0" />
+                    <div>
+                      <p className="font-medium text-amber-700 dark:text-amber-400 text-sm">Streaming URLs tidak tersedia</p>
+                      <p className="text-xs text-amber-600/80 dark:text-amber-400/80 mt-1">
+                        {streaming?.note || 'Gagal mengambil data streaming dari API.'}
+                      </p>
                     </div>
-                  ) : (
-                    <Tabs defaultValue="video">
-                      <TabsList className="w-full">
-                        <TabsTrigger value="video" className="flex-1 gap-1.5">
-                          <Film className="h-3.5 w-3.5" />
-                          Video ({result.data.streaming!.videos.length})
-                        </TabsTrigger>
-                        <TabsTrigger value="audio" className="flex-1 gap-1.5">
-                          <Music className="h-3.5 w-3.5" />
-                          Audio ({result.data.streaming!.audios.length})
-                        </TabsTrigger>
-                      </TabsList>
+                  </div>
+                ) : (
+                  <Tabs defaultValue="video">
+                    <TabsList className="w-full">
+                      <TabsTrigger value="video" className="flex-1 gap-1.5">
+                        <Film className="h-3.5 w-3.5" />
+                        Video ({streaming!.videos.length})
+                      </TabsTrigger>
+                      <TabsTrigger value="audio" className="flex-1 gap-1.5">
+                        <Music className="h-3.5 w-3.5" />
+                        Audio ({streaming!.audios.length})
+                      </TabsTrigger>
+                    </TabsList>
 
-                      <TabsContent value="video">
-                        <div className="space-y-2 max-h-96 overflow-y-auto">
-                          {result.data.streaming!.videos.map((v, i) => (
-                            <div
-                              key={i}
-                              className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-muted/50 transition-colors"
-                            >
-                              <div className="min-w-0 flex-1 mr-3">
-                                <div className="flex items-center gap-2 mb-1">
-                                  <Badge variant="default" className="bg-pink-500 hover:bg-pink-600 text-xs">
-                                    {v.qualityLabel}
-                                  </Badge>
-                                  <span className="text-xs text-muted-foreground">
-                                    {v.width}x{v.height} · {v.codec}
-                                  </span>
-                                </div>
-                                <p className="text-xs text-muted-foreground truncate font-mono">{v.baseUrl}</p>
+                    <TabsContent value="video">
+                      <div className="space-y-2 max-h-[480px] overflow-y-auto">
+                        {streaming!.videos.map((v, i) => (
+                          <div
+                            key={i}
+                            className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-muted/50 transition-colors gap-2"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center flex-wrap gap-1.5 mb-1">
+                                <Badge
+                                  variant={v.isDash ? 'outline' : 'default'}
+                                  className={v.isDash ? 'text-xs' : 'bg-pink-500 hover:bg-pink-600 text-xs'}
+                                >
+                                  {v.qualityLabel}
+                                </Badge>
+                                <span className="text-[11px] text-muted-foreground">
+                                  {v.width}x{v.height}
+                                </span>
+                                <span className="text-[11px] text-muted-foreground font-mono">{v.codec}</span>
+                                {formatBandwidth(v.bandwidth) && (
+                                  <span className="text-[11px] text-muted-foreground">{formatBandwidth(v.bandwidth)}</span>
+                                )}
+                                {formatSize(v.size) && (
+                                  <span className="text-[11px] text-muted-foreground">{formatSize(v.size)}</span>
+                                )}
+                                {v.isDash && (
+                                  <Badge variant="secondary" className="text-[10px] px-1.5">DASH</Badge>
+                                )}
                               </div>
-                              <Button variant="ghost" size="sm" onClick={() => copyToClipboard(v.baseUrl, `v-${i}`)}>
-                                {copiedUrl === `v-${i}` ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+                              {v.baseUrl ? (
+                                <p className="text-[11px] text-muted-foreground truncate font-mono max-w-md">{v.baseUrl}</p>
+                              ) : (
+                                <p className="text-[11px] text-muted-foreground italic">DASH segment — no direct URL (use player)</p>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              {v.baseUrl && (
+                                <>
+                                  <Button variant="ghost" size="sm" className="h-8 w-8 p-0" asChild>
+                                    <a href={v.baseUrl} target="_blank" rel="noopener noreferrer">
+                                      <ExternalLink className="h-3.5 w-3.5" />
+                                    </a>
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-8 w-8 p-0"
+                                    onClick={() => copyToClipboard(v.baseUrl, `v-${i}`)}
+                                  >
+                                    {copiedUrl === `v-${i}` ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+                                  </Button>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </TabsContent>
+
+                    <TabsContent value="audio">
+                      <div className="space-y-2 max-h-[480px] overflow-y-auto">
+                        {streaming!.audios.map((a, i) => (
+                          <div
+                            key={i}
+                            className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-muted/50 transition-colors gap-2"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center flex-wrap gap-1.5 mb-1">
+                                <Badge variant="secondary" className="text-xs">Audio #{a.qualityId}</Badge>
+                                <span className="text-[11px] text-muted-foreground font-mono">{a.codec}</span>
+                                {formatBandwidth(a.bandwidth) && (
+                                  <span className="text-[11px] text-muted-foreground">{formatBandwidth(a.bandwidth)}</span>
+                                )}
+                                {formatSize(a.size) && (
+                                  <span className="text-[11px] text-muted-foreground">{formatSize(a.size)}</span>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-muted-foreground truncate font-mono max-w-md">{a.baseUrl}</p>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <Button variant="ghost" size="sm" className="h-8 w-8 p-0" asChild>
+                                <a href={a.baseUrl} target="_blank" rel="noopener noreferrer">
+                                  <ExternalLink className="h-3.5 w-3.5" />
+                                </a>
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 w-8 p-0"
+                                onClick={() => copyToClipboard(a.baseUrl, `a-${i}`)}
+                              >
+                                {copiedUrl === `a-${i}` ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
                               </Button>
                             </div>
-                          ))}
-                        </div>
-                      </TabsContent>
-
-                      <TabsContent value="audio">
-                        <div className="space-y-2 max-h-96 overflow-y-auto">
-                          {result.data.streaming!.audios.map((a, i) => (
-                            <div
-                              key={i}
-                              className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-muted/50 transition-colors"
-                            >
-                              <div className="min-w-0 flex-1 mr-3">
-                                <div className="flex items-center gap-2 mb-1">
-                                  <Badge variant="secondary" className="text-xs">Audio #{a.qualityId}</Badge>
-                                  <span className="text-xs text-muted-foreground">{a.codec} · {(a.bandwidth / 1000).toFixed(0)}kbps</span>
-                                </div>
-                                <p className="text-xs text-muted-foreground truncate font-mono">{a.baseUrl}</p>
-                              </div>
-                              <Button variant="ghost" size="sm" onClick={() => copyToClipboard(a.baseUrl, `a-${i}`)}>
-                                {copiedUrl === `a-${i}` ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
-                              </Button>
-                            </div>
-                          ))}
-                        </div>
-                      </TabsContent>
-                    </Tabs>
-                  )}
-                </CardContent>
-              </Card>
-            )}
+                          </div>
+                        ))}
+                      </div>
+                    </TabsContent>
+                  </Tabs>
+                )}
+              </CardContent>
+            </Card>
 
             {/* Recommendations */}
             {result.data.recommendations && result.data.recommendations.length > 0 && (
@@ -372,7 +414,7 @@ export default function Home() {
                       >
                         <div className="relative">
                           <img src={rec.cover} alt={rec.title} className="w-full h-24 object-cover" />
-                          {rec.duration > 0 && (
+                          {typeof rec.duration === 'number' && rec.duration > 0 && (
                             <span className="absolute bottom-1 right-1 bg-black/75 text-white text-[10px] px-1.5 py-0.5 rounded">
                               {formatDuration(rec.duration)}
                             </span>

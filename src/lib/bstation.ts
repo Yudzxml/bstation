@@ -11,6 +11,8 @@ interface VideoStream {
   width: number;
   height: number;
   frameRate: string;
+  size: number;
+  isDash: boolean;
 }
 
 interface AudioStream {
@@ -20,6 +22,7 @@ interface AudioStream {
   baseUrl: string;
   backupUrl: string | null;
   codec: string;
+  size: number;
 }
 
 interface BstationResult {
@@ -80,38 +83,18 @@ interface BstationResult {
 // ====================================================================
 // FIX #1: IIFE-aware full expression extraction
 // ====================================================================
-// Format bilibili.tv SEBENARNYA (minified IIFE):
-//   window.__initialState=(function(a,b,c,...,t){return {global:{...},ugc:{...}}}(arg1,arg2,...,argN))
-//
-// Bug original: regex `return\s+(\{[\s\S]+?\})\s*}\(` gagal karena:
-//   1. Non-greedy `+?` berhenti di `}` pertama (bukan closing brace yang benar)
-//   2. Pola `}\(` tidak match format IIFE `(function(...){return {...}}(...))`
-// Bug pertama fix: extract hanya object di dalam return → GAGAL karena
-//   object menggunakan parameter minified (c, g, f) yang undefined di luar IIFE
-//   → solusi: evaluasi SELURUH IIFE expression `(function(...){...}(...))`
 
 function extractIifeObject(scriptContent: string, marker: string): object | null {
   const markerIdx = scriptContent.indexOf(marker);
   if (markerIdx === -1) return null;
-
   const eqIdx = scriptContent.indexOf('=', markerIdx);
   if (eqIdx === -1) return null;
-
   const afterEq = scriptContent.substring(eqIdx + 1).trimStart();
-
-  if (afterEq[0] !== '(') {
-    return extractBalancedParenExpr(afterEq);
-  }
-
+  if (afterEq[0] !== '(') return extractBalancedParenExpr(afterEq);
   const funcMatch = afterEq.match(/^\(function\s*\(/);
-  if (!funcMatch) {
-    return extractBalancedParenExpr(afterEq);
-  }
-
-  // Evaluasi seluruh IIFE
+  if (!funcMatch) return extractBalancedParenExpr(afterEq);
   const endIdx = findBalancedParenEnd(afterEq, 0);
   if (endIdx === -1) return null;
-
   const iifeExpr = afterEq.substring(0, endIdx);
   try {
     return new Function(`return (${iifeExpr})`)();
@@ -211,7 +194,6 @@ function extractBalancedParenExpr(content: string): object | null {
 }
 
 // ==================== FIX #2: Class name fix ====================
-// Original: `BstationParser.getQualityLabel()` → class tidak ada!
 
 function getQualityLabel(id: number): string {
   const map: Record<number, string> = {
@@ -220,22 +202,105 @@ function getQualityLabel(id: number): string {
     64: '720P (HD)',
     32: '480P',
     16: '360P',
-    15: '240P'
+    15: '240P',
+    6: '240P'
   };
   return map[id] || `${id}P (Unknown)`;
 }
 
+// ====================================================================
+// FIX #4: Fetch streaming URLs via bilibili.tv PlayURL API
+// ====================================================================
+// Endpoint: GET https://api.bilibili.tv/intl/gateway/web/playurl
+// Params: s_locale, platform, aid
+// Response: data.playurl.video[].video_resource & data.playurl.audio_resource[]
+// Thanks to PHP reference code from user
+
+async function fetchPlayUrl(aid: string, locale: string = 'id'): Promise<{
+  duration: number;
+  videos: VideoStream[];
+  audios: AudioStream[];
+} | null> {
+  try {
+    const api = new URL('https://api.bilibili.tv/intl/gateway/web/playurl');
+    api.searchParams.set('s_locale', locale);
+    api.searchParams.set('platform', 'web');
+    api.searchParams.set('aid', aid);
+
+    const resp = await fetch(api.toString(), {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.5672.92 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': `${locale},en-US;q=0.9,en;q=0.8`,
+        'Referer': 'https://www.bilibili.tv/',
+        'Origin': 'https://www.bilibili.tv',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-site'
+      }
+    });
+
+    if (!resp.ok) return null;
+
+    const json = (await resp.json()) as Record<string, unknown>;
+    if (!json.data || typeof json.data !== 'object') return null;
+
+    const data = json.data as Record<string, unknown>;
+    const playurl = (data.playurl || {}) as Record<string, unknown>;
+
+    const videoList = (playurl.video || []) as Array<Record<string, unknown>>;
+    const audioList = (playurl.audio_resource || []) as Array<Record<string, unknown>>;
+
+    const videos: VideoStream[] = videoList.map(v => {
+      const vr = (v.video_resource || {}) as Record<string, unknown>;
+      const si = (v.stream_info || {}) as Record<string, unknown>;
+      const url = (vr.url as string) || '';
+      return {
+        qualityId: (vr.quality as number) || 0,
+        qualityLabel: (si.desc_words as string) || getQualityLabel(vr.quality as number),
+        codec: (vr.codecs as string) || '',
+        mimeType: (vr.mime_type as string) || '',
+        bandwidth: (vr.bandwidth as number) || 0,
+        baseUrl: url,
+        backupUrl: (vr.backup_url as string) || null,
+        width: (vr.width as number) || 0,
+        height: (vr.height as number) || 0,
+        frameRate: (vr.frame_rate as string) || '',
+        size: (vr.size as number) || 0,
+        isDash: !url && !!(vr.segment_base)
+      };
+    });
+
+    const audios: AudioStream[] = audioList.map(a => ({
+      qualityId: (a.quality as number) || 0,
+      bandwidth: (a.bandwidth as number) || 0,
+      mimeType: (a.mime_type as string) || '',
+      baseUrl: (a.url as string) || '',
+      backupUrl: (a.backup_url as string) || null,
+      codec: (a.codecs as string) || '',
+      size: (a.size as number) || 0
+    }));
+
+    return {
+      duration: (playurl.duration as number) || 0,
+      videos,
+      audios
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ==================== FIX #3: Stat path & type fix ====================
-// Original: `ugc.stat` → sebenarnya data ada di `ugc.archive.stat`
-// Original: values di-cast sebagai number → sebenarnya string ("4.3K Ditonton")
 
 async function detail(url: string): Promise<BstationResult> {
   try {
+    // Step 1: Fetch HTML and parse __initialState
     const response = await fetch(url, {
       method: 'GET',
       headers: {
-        accept:
-          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
         'accept-language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
         'cache-control': 'no-cache',
         pragma: 'no-cache',
@@ -247,13 +312,26 @@ async function detail(url: string): Promise<BstationResult> {
         'sec-fetch-site': 'same-origin',
         'sec-fetch-user': '?1',
         'upgrade-insecure-requests': '1',
-        cookie:
-          'buvid3=43732f08-47c0-4e94-a2aa-37b5e1fc888963545infoc; buvid4=A79D9F34-506A-A589-C757-8D192192F95C48261-126010922-x3kuoMrzvXMWbClRBF%2FDPg%3D%3D; bstar-web-lang=id; g_state={"i_l":0,"i_ll":1768135912002,"i_b":"Tv06Mk6YXj9siH2JdCMNeiDTZF3SRDPxa/VoX8k5JqI","i_e":{"enable_itp_optimization":0}}'
+        cookie: 'buvid3=43732f08-47c0-4e94-a2aa-37b5e1fc888963545infoc; buvid4=A79D9F34-506A-A589-C757-8D192192F95C48261-126010922-x3kuoMrzvXMWbClRBF%2FDPg%3D%3D; bstar-web-lang=id'
       }
     });
     if (!response.ok) throw new Error(`HTTP Error ${response.status}`);
     const html = await response.text();
-    return parse(html);
+    const parsed = parse(html);
+
+    // Step 2: Fetch streaming URLs via PlayURL API
+    if (parsed.success && parsed.data.videoInfo?.aid) {
+      const playurlData = await fetchPlayUrl(String(parsed.data.videoInfo.aid));
+      if (playurlData) {
+        parsed.data.streaming = {
+          duration: playurlData.duration,
+          videos: playurlData.videos,
+          audios: playurlData.audios
+        };
+      }
+    }
+
+    return parsed;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     return {
@@ -285,7 +363,6 @@ function parse(htmlContent: string): BstationResult {
     if (idMatch) basicMeta.videoId = idMatch[1];
 
     let initialState: Record<string, unknown> | null = null;
-
     $('script').each((_i, el) => {
       const content = $(el).html() || '';
       if (content.includes('__initialState')) {
@@ -305,48 +382,12 @@ function parse(htmlContent: string): BstationResult {
     if (initialState) {
       const ugc = (initialState.ugc || {}) as Record<string, unknown>;
       const archive = (ugc.archive || {}) as Record<string, unknown>;
-      const player = (initialState.player || {}) as Record<string, unknown>;
-      // FIX #3: playUrl bisa string kosong, bukan object
-      const playUrl = typeof player.playUrl === 'object' && player.playUrl
-        ? (player.playUrl as Record<string, unknown>)
-        : null;
-      const dash = playUrl ? (playUrl.dash || {}) as Record<string, unknown> : {};
-
-      // FIX #3: Stats di archive.stat, bukan ugc.stat
       const archiveStat = (archive.stat || {}) as Record<string, unknown>;
-
-      const videoStreams: VideoStream[] = ((dash.video as Array<Record<string, unknown>>) || []).map(v => ({
-        qualityId: v.id as number,
-        qualityLabel: getQualityLabel(v.id as number),
-        codec: (v.codecs as string) || '',
-        mimeType: (v.mime_type as string) || '',
-        bandwidth: (v.bandwidth as number) || 0,
-        baseUrl: (v.baseUrl as string) || '',
-        backupUrl: v.backup_url
-          ? ((v.backup_url as unknown[])[0] as string) || null
-          : null,
-        width: (v.width as number) || 0,
-        height: (v.height as number) || 0,
-        frameRate: (v.frame_rate as string) || ''
-      }));
-
-      const audioStreams: AudioStream[] = ((dash.audio as Array<Record<string, unknown>>) || []).map(a => ({
-        qualityId: (a.id as number) || 0,
-        bandwidth: (a.bandwidth as number) || 0,
-        mimeType: (a.mime_type as string) || '',
-        baseUrl: (a.baseUrl as string) || '',
-        backupUrl: a.backup_url
-          ? ((a.backup_url as unknown[])[0] as string) || null
-          : null,
-        codec: (a.codecs as string) || ''
-      }));
-
       const uploader = archive.uploader as Record<string, unknown> | undefined;
       const playRecommend = (initialState.playRecommend || {}) as Record<string, unknown>;
       const recommends = (playRecommend.recommends || []) as Array<Record<string, unknown>>;
       const rights = archive.rights as Record<string, unknown> | undefined;
 
-      // FIX #3: aid bisa string, konversi ke number
       const rawAid = (ugc.aid as string) || (archive.aid as string) || '0';
 
       detailedData.videoInfo = {
@@ -365,12 +406,10 @@ function parse(htmlContent: string): BstationResult {
           mid: parseInt(String(uploader.mid), 10) || 0,
           name: (uploader.name as string) || '',
           avatar: (uploader.avatar as string) || '',
-          // FIX #3: follower dari archive.stat, format string
           follower: (archiveStat.followers as string) || (archiveStat.fans as string) || '0'
         };
       }
 
-      // FIX #3: Stats dari archive.stat dengan value asli (string)
       detailedData.stats = {
         views: (archiveStat.views as string) || '0',
         likes: (archiveStat.like_count as string) || '0',
@@ -378,21 +417,13 @@ function parse(htmlContent: string): BstationResult {
         arcs: (archiveStat.arcs as string) || ''
       };
 
-      // Streaming URLs - hanya tersedia jika playUrl ada datanya
-      if (playUrl && typeof playUrl === 'object' && Object.keys(playUrl).length > 0) {
-        detailedData.streaming = {
-          duration: (dash.duration as number) || 0,
-          videos: videoStreams,
-          audios: audioStreams
-        };
-      } else {
-        detailedData.streaming = {
-          duration: 0,
-          videos: [],
-          audios: [],
-          note: 'Streaming URLs tidak tersedia via server-side scraping. Bilibili.tv hanya menyediakan playUrl melalui API client-side yang membutuhkan autentikasi.'
-        };
-      }
+      // Streaming akan di-fill oleh fetchPlayUrl() di detail()
+      detailedData.streaming = {
+        duration: 0,
+        videos: [],
+        audios: [],
+        note: 'Memuat streaming URLs...'
+      };
 
       detailedData.recommendations = recommends.map(item => ({
         aid: parseInt(String(item.aid), 10) || 0,
