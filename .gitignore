@@ -1,6 +1,4 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
-# dependencies
+# Dependencies
 node_modules
 /.pnp
 .pnp.*
@@ -10,54 +8,43 @@ node_modules
 !.yarn/releases
 !.yarn/versions
 
-# testing
-/coverage
-
-# next.js
+# Next.js
 /.next/
 /out/
+*.tsbuildinfo
+next-env.d.ts
 
-# production
+# Production
 /build
 
-# misc
-.DS_Store
-*.pem
+# Environment
+.env*
+.vercel
 
-# debug
+# Debug logs
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
-
-# vercel
-.vercel
-
-
-# typescript
-*.tsbuildinfo
-next-env.d.ts
+# Misc
+.DS_Store
+*.pem
+/coverage
 local-*
 .claude
 .z-ai-config
-*.log
-dev.log
-dev.out.log
-test
-prompt
-
-server.log
-# Skills directory
+/test/
+/prompt
+/upload/
 /skills/
-
-# Project-specific
+/mini-services/
 /tool-results/
 /db/*.db
 /download/
 /worklog.md
-/mini-services/
 Caddyfile
-*.log
+server.log
+dev.log
+dev.out.log

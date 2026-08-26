@@ -133,9 +133,8 @@ export default function Home() {
   }, [loadVideo]);
 
   // ==================== DASH Player ====================
-  // Use ref for toast to avoid re-triggering the player effect
-  const toastRef = useRef(toast);
-  toastRef.current = toast;
+  // Stable toast reference for use inside player callbacks
+  const toastFn = useCallback((opts: Parameters<typeof toast>[0]) => toast(opts), [toast]);
 
   useEffect(() => {
     if (pageState !== 'player' || !result?.data?.videoInfo?.aid || !videoRef.current) {
@@ -179,7 +178,7 @@ export default function Home() {
         if (destroyed) return;
         const err = e as { error?: { message?: string } };
         setPlayerLoading(false);
-        toastRef.current({
+        toastFn({
           title: 'Stream gagal diputar',
           description: err?.error?.message || 'Gagal memuat stream. Coba video lain atau coba lagi nanti.',
           variant: 'destructive',

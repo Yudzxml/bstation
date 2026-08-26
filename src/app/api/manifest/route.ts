@@ -22,10 +22,11 @@ export async function GET(request: NextRequest) {
   const audios = playinfo.audios;
   const durationSec = playinfo.duration.toFixed(3);
 
-  // Build proxy base URL (used only as fallback)
+  // Build proxy base URL
   const host = request.headers.get('host') 
     ? `http://${request.headers.get('host')}` 
     : 'http://localhost:3000';
+  const videoPageUrl = `https://www.bilibili.tv/video/${aid}`;
 
   // Group videos by codec family (AVC vs HEVC)
   const avcVideos = videos.filter(v => v.codec.startsWith('avc'));
@@ -34,15 +35,14 @@ export async function GET(request: NextRequest) {
   // Use AVC as primary, fall back to HEVC if no AVC
   const primaryVideos = avcVideos.length > 0 ? avcVideos : hevcVideos;
 
-  // Build video representations using DIRECT CDN URLs
-  // The CDN has Access-Control-Allow-Origin: * so browser can fetch directly
+  // Build video representations using PROXY URLs
+  // Proxy adds correct Referer + mobile headers that CDN requires
   let videoReps = '';
   for (const v of primaryVideos) {
     if (!v.baseUrl) continue;
 
-    const videoUrl = v.baseUrl;
+    const proxyUrl = `${host}/api/proxy?url=${encodeURIComponent(v.baseUrl)}&referer=${encodeURIComponent(videoPageUrl)}`;
     const frameRate = v.frameRate || '30';
-    // frameRate may be 'num/den' format - keep as-is for DASH spec compliance
 
     if (v.isDash && v.segmentBase) {
       videoReps += `
@@ -50,12 +50,12 @@ export async function GET(request: NextRequest) {
           <SegmentBase indexRange="${escapeXml(v.segmentBase.indexRange)}">
             <Initialization range="${escapeXml(v.segmentBase.range)}"/>
           </SegmentBase>
-          <BaseURL>${escapeXml(videoUrl)}</BaseURL>
+          <BaseURL>${escapeXml(proxyUrl)}</BaseURL>
         </Representation>`;
     } else {
       videoReps += `
         <Representation id="v${v.qualityId}" bandwidth="${v.bandwidth}" width="${v.width}" height="${v.height}" codecs="${escapeXml(v.codec)}">
-          <BaseURL>${escapeXml(videoUrl)}</BaseURL>
+          <BaseURL>${escapeXml(proxyUrl)}</BaseURL>
         </Representation>`;
     }
   }
@@ -67,9 +67,10 @@ export async function GET(request: NextRequest) {
     if (!a.baseUrl || seenAudio.has(a.qualityId)) continue;
     seenAudio.add(a.qualityId);
 
+    const proxyUrl = `${host}/api/proxy?url=${encodeURIComponent(a.baseUrl)}&referer=${encodeURIComponent(videoPageUrl)}`;
     audioReps += `
         <Representation id="a${a.qualityId}" bandwidth="${a.bandwidth}" codecs="${escapeXml(a.codec)}">
-          <BaseURL>${escapeXml(a.baseUrl)}</BaseURL>
+          <BaseURL>${escapeXml(proxyUrl)}</BaseURL>
         </Representation>`;
   }
 
@@ -99,6 +100,8 @@ export async function OPTIONS() {
     headers: {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Headers': 'Range',
+      'Access-Control-Expose-Headers': 'Content-Range, Content-Length',
     },
   });
 }

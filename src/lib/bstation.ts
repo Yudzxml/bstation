@@ -77,12 +77,44 @@ interface BstationResult {
       cover: string;
       author: string;
       view: string;
-      duration: number;
+      duration: number | string;
     }>;
   };
   error?: string;
   message?: string;
 }
+
+// ====================================================================
+// Mobile Android headers (matches bilibili.tv's own dash player)
+// ====================================================================
+
+const MOBILE_HEADERS: Record<string, string> = {
+  'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+  'accept-language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+  'cache-control': 'no-cache',
+  'pragma': 'no-cache',
+  'sec-ch-ua': '"Chromium";v="139", "Not;A=Brand";v="99"',
+  'sec-ch-ua-mobile': '?1',
+  'sec-ch-ua-platform': '"Android"',
+  'sec-fetch-dest': 'document',
+  'sec-fetch-mode': 'navigate',
+  'sec-fetch-site': 'none',
+  'sec-fetch-user': '?1',
+  'upgrade-insecure-requests': '1',
+  'User-Agent': 'Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36',
+};
+
+const MOBILE_API_HEADERS: Record<string, string> = {
+  'accept': 'application/json, text/plain, */*',
+  'accept-language': 'id-ID,id;q=0.9,en-US;q=0.8',
+  'sec-ch-ua': '"Chromium";v="139", "Not;A=Brand";v="99"',
+  'sec-ch-ua-mobile': '?1',
+  'sec-ch-ua-platform': '"Android"',
+  'sec-fetch-dest': 'empty',
+  'sec-fetch-mode': 'cors',
+  'sec-fetch-site': 'same-site',
+  'User-Agent': 'Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36',
+};
 
 // ====================================================================
 // IIFE-aware full expression extraction
@@ -223,6 +255,7 @@ interface PlayinfoData {
 /**
  * Extract __playinfo__ from the HTML page.
  * bilibili.tv embeds playinfo as base64-encoded JSON in a <script> tag.
+ * Supports both standard base64 and URL-safe base64.
  */
 function extractPlayinfoFromHtml(html: string): PlayinfoData | null {
   try {
@@ -231,32 +264,30 @@ function extractPlayinfoFromHtml(html: string): PlayinfoData | null {
 
     $('script').each((_i, el) => {
       const content = $(el).html() || '';
-      // Pattern 1: window.__playinfo__=base64string
-      const match1 = content.match(/window\.__playinfo__\s*=\s*(['"])([A-Za-z0-9+/=]+)\1/);
-      if (match1) {
-        playinfoBase64 = match1[2];
-        return false;
-      }
-      // Pattern 2: window.__playinfo__=base64string (no quotes)
-      const match2 = content.match(/window\.__playinfo__\s*=\s*([A-Za-z0-9+/=]+)/);
-      if (match2) {
-        playinfoBase64 = match2[1];
-        return false;
-      }
-      // Pattern 3: __playinfo__=base64string
-      const match3 = content.match(/__playinfo__\s*=\s*(['"]?)([A-Za-z0-9+/=]+)\1/);
-      if (match3) {
-        playinfoBase64 = match3[2];
-        return false;
-      }
+      
+      // Pattern 1: window.__playinfo__="base64string" (quoted)
+      const match1 = content.match(/window\.__playinfo__\s*=\s*['"]([A-Za-z0-9+\-_/=]+)['"]/);
+      if (match1) { playinfoBase64 = match1[1]; return false; }
+      
+      // Pattern 2: window.__playinfo__=base64string (unquoted, standard + URL-safe)
+      const match2 = content.match(/window\.__playinfo__\s*=\s*([A-Za-z0-9+\-_/=]{20,})/);
+      if (match2) { playinfoBase64 = match2[1]; return false; }
+      
+      // Pattern 3: __playinfo__="base64string" (no window prefix)
+      const match3 = content.match(/__playinfo__\s*=\s*['"]([A-Za-z0-9+\-_/=]+)['"]/);
+      if (match3) { playinfoBase64 = match3[1]; return false; }
     });
 
     if (!playinfoBase64) return null;
 
-    // Decode base64 - may have URL-safe chars
+    // Decode base64 - handle both standard and URL-safe
     let decoded: string;
     try {
-      decoded = Buffer.from(playinfoBase64, 'base64').toString('utf-8');
+      // Normalize URL-safe base64 to standard
+      const normalized = playinfoBase64.replace(/-/g, '+').replace(/_/g, '/');
+      // Add padding if needed
+      const padded = normalized.padEnd(normalized.length + (4 - normalized.length % 4) % 4, '=');
+      decoded = Buffer.from(padded, 'base64').toString('utf-8');
     } catch {
       return null;
     }
@@ -287,10 +318,31 @@ function extractPlayinfoFromNextData(html: string): PlayinfoData | null {
 
     if (!nextData?.props?.pageProps) return null;
     const pageProps = nextData.props.pageProps as Record<string, unknown>;
-    const playInfo = pageProps.playInfo || pageProps.playinfo || pageProps.play_info;
-    if (!playInfo || typeof playInfo !== 'object') return null;
+    
+    // Try multiple possible paths for playInfo in __NEXT_DATA__
+    const paths = [
+      'playInfo', 'playinfo', 'play_info', 'playUrl', 'playurl',
+      'videoData.playInfo', 'videoData.playinfo', 'videoData.playUrl',
+    ];
+    
+    for (const path of paths) {
+      const keys = path.split('.');
+      let current: unknown = pageProps;
+      for (const key of keys) {
+        if (current && typeof current === 'object') {
+          current = (current as Record<string, unknown>)[key];
+        } else {
+          current = undefined;
+          break;
+        }
+      }
+      if (current && typeof current === 'object') {
+        const result = parsePlayinfoResponse(current as Record<string, unknown>);
+        if (result && (result.videos.length > 0 || result.audios.length > 0)) return result;
+      }
+    }
 
-    return parsePlayinfoResponse(playInfo as Record<string, unknown>);
+    return null;
   } catch {
     return null;
   }
@@ -298,26 +350,61 @@ function extractPlayinfoFromNextData(html: string): PlayinfoData | null {
 
 /**
  * Extract playinfo from __initialState (already parsed)
+ * Tries many possible nested paths where playurl might be stored.
  */
 function extractPlayinfoFromInitialState(initialState: Record<string, unknown>): PlayinfoData | null {
   try {
-    // Try various paths in __initialState
-    const playerData = initialState.playerData as Record<string, unknown> | undefined;
-    if (playerData?.playUrl) {
-      return parsePlayinfoResponse(playerData.playUrl as Record<string, unknown>);
+    // Try various nested paths in __initialState
+    const paths = [
+      'playerData.playUrl',
+      'player.playUrl',
+      'playInfo',
+      'playUrl',
+      'ugc.playUrl',
+      'ugc.playerData.playUrl',
+      'videoDetail.playUrl',
+      'videoDetail.playInfo',
+      'videoInfo.playUrl',
+    ];
+
+    for (const path of paths) {
+      const keys = path.split('.');
+      let current: unknown = initialState;
+      for (const key of keys) {
+        if (current && typeof current === 'object') {
+          current = (current as Record<string, unknown>)[key];
+        } else {
+          current = undefined;
+          break;
+        }
+      }
+      if (current && typeof current === 'object') {
+        const result = parsePlayinfoResponse(current as Record<string, unknown>);
+        if (result && (result.videos.length > 0 || result.audios.length > 0)) return result;
+      }
     }
 
-    const player = initialState.player as Record<string, unknown> | undefined;
-    if (player?.playUrl) {
-      return parsePlayinfoResponse(player.playUrl as Record<string, unknown>);
+    // Deep search: look for any object that has 'video' array with 'video_resource'
+    function deepSearch(obj: unknown, depth = 0): PlayinfoData | null {
+      if (depth > 5 || !obj || typeof obj !== 'object') return null;
+      const record = obj as Record<string, unknown>;
+      
+      if (record.video && Array.isArray(record.video)) {
+        const firstVideo = record.video[0] as Record<string, unknown> | undefined;
+        if (firstVideo?.video_resource || firstVideo?.url) {
+          const result = parsePlayinfoResponse(record);
+          if (result && (result.videos.length > 0 || result.audios.length > 0)) return result;
+        }
+      }
+      
+      for (const value of Object.values(record)) {
+        const found = deepSearch(value, depth + 1);
+        if (found) return found;
+      }
+      return null;
     }
 
-    const playInfo = initialState.playInfo as Record<string, unknown> | undefined;
-    if (playInfo) {
-      return parsePlayinfoResponse(playInfo);
-    }
-
-    return null;
+    return deepSearch(initialState);
   } catch {
     return null;
   }
@@ -420,7 +507,7 @@ function generateBuvid4(): string {
 // Fetch streaming URLs via bilibili.tv PlayURL API (with cookies)
 // ====================================================================
 
-async function fetchPlayUrlApi(aid: string, pageCookies: string, locale: string = 'id'): Promise<PlayinfoData | null> {
+async function fetchPlayUrlApi(aid: string, pageCookies: string, videoPageUrl: string, locale: string = 'id'): Promise<PlayinfoData | null> {
   try {
     const buvid3 = generateBuvid3();
     const buvid4 = generateBuvid4();
@@ -440,18 +527,10 @@ async function fetchPlayUrlApi(aid: string, pageCookies: string, locale: string 
     const resp = await fetch(api.toString(), {
       method: 'GET',
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': `${locale},en-US;q=0.9,en;q=0.8`,
-        'Referer': 'https://www.bilibili.tv/',
+        ...MOBILE_API_HEADERS,
+        'Referer': videoPageUrl,
         'Origin': 'https://www.bilibili.tv',
         'Cookie': cookieStr,
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-site',
-        'Sec-Ch-Ua': '"Chromium";v="125", "Not.A/Brand";v="99"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"',
       }
     });
 
@@ -473,27 +552,15 @@ async function fetchPlayUrlApi(aid: string, pageCookies: string, locale: string 
 
 async function detail(url: string): Promise<BstationResult> {
   try {
-    // Step 1: Fetch HTML page
+    // Step 1: Fetch HTML page with mobile Android headers
     const buvid3 = generateBuvid3();
     const buvid4 = generateBuvid4();
 
     const response = await fetch(url, {
       method: 'GET',
       headers: {
-        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'accept-language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
-        'cache-control': 'no-cache',
-        'pragma': 'no-cache',
-        'sec-ch-ua': '"Chromium";v="125", "Not.A/Brand";v="99"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'sec-fetch-dest': 'document',
-        'sec-fetch-mode': 'navigate',
-        'sec-fetch-site': 'none',
-        'sec-fetch-user': '?1',
-        'upgrade-insecure-requests': '1',
+        ...MOBILE_HEADERS,
         'cookie': `buvid3=${buvid3}; buvid4=${buvid4}; bstar-web-lang=id`,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
       }
     });
     if (!response.ok) throw new Error(`HTTP Error ${response.status}`);
@@ -523,7 +590,6 @@ async function detail(url: string): Promise<BstationResult> {
 
       // Strategy 3: Extract from __initialState (already parsed)
       if (!playinfoData || (playinfoData.videos.length === 0 && playinfoData.audios.length === 0)) {
-        // Re-extract initialState for playinfo
         const $ = cheerio.load(html);
         $('script').each((_i, el) => {
           const content = $(el).html() || '';
@@ -544,7 +610,7 @@ async function detail(url: string): Promise<BstationResult> {
 
       // Strategy 4: PlayURL API with page cookies (last resort)
       if (!playinfoData || (playinfoData.videos.length === 0 && playinfoData.audios.length === 0)) {
-        playinfoData = await fetchPlayUrlApi(aid, pageCookieStr);
+        playinfoData = await fetchPlayUrlApi(aid, pageCookieStr, url);
       }
 
       if (playinfoData && (playinfoData.videos.length > 0 || playinfoData.audios.length > 0)) {
@@ -708,17 +774,8 @@ export async function fetchPlayInfo(aid: string): Promise<PlayinfoData | null> {
     const resp = await fetch(pageUrl, {
       method: 'GET',
       headers: {
-        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'accept-language': 'id-ID,id;q=0.9,en-US;q=0.8',
-        'sec-ch-ua': '"Chromium";v="125", "Not.A/Brand";v="99"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'sec-fetch-dest': 'document',
-        'sec-fetch-mode': 'navigate',
-        'sec-fetch-site': 'none',
-        'upgrade-insecure-requests': '1',
+        ...MOBILE_HEADERS,
         'cookie': `buvid3=${buvid3}; buvid4=${buvid4}; bstar-web-lang=id`,
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
       }
     });
 
@@ -756,16 +813,16 @@ export async function fetchPlayInfo(aid: string): Promise<PlayinfoData | null> {
       if (data && (data.videos.length > 0 || data.audios.length > 0)) return data;
 
       // Strategy 4: API with cookies
-      data = await fetchPlayUrlApi(aid, pageCookieStr);
+      data = await fetchPlayUrlApi(aid, pageCookieStr, pageUrl);
       if (data && (data.videos.length > 0 || data.audios.length > 0)) return data;
     }
   } catch {
     // Fall through to direct API
   }
 
-  // Last resort: direct API call
-  return fetchPlayUrlApi(aid, '');
+  // Last resort: direct API call with mobile headers
+  return fetchPlayUrlApi(aid, '', `https://www.bilibili.tv/video/${aid}`);
 }
 
-export { detail, parse, getQualityLabel };
+export { detail, parse, getQualityLabel, MOBILE_HEADERS, MOBILE_API_HEADERS };
 export type { BstationResult, VideoStream, AudioStream, PlayinfoData };
