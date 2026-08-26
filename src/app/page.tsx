@@ -158,6 +158,9 @@ export default function Home() {
       const dashjsLib = dashjsModule.default || dashjsModule;
 
       const player = dashjsLib.MediaPlayer().create();
+
+      // CDN has Access-Control-Allow-Origin: * so browser fetches directly
+      // No custom headers needed - signed URLs + user's IP = works
       player.initialize(videoRef.current, manifestUrl, true);
 
       player.on(dashjsLib.MediaPlayer.events.STREAM_INITIALIZED, () => {
@@ -179,8 +182,8 @@ export default function Home() {
         const err = e as { error?: { message?: string } };
         setPlayerLoading(false);
         toast({
-          title: 'Stream tidak dapat diputar',
-          description: err?.error?.message || 'CDN memblokir akses dari server ini (403). Deploy ke server dengan IP yang diizinkan untuk streaming. Download URL tersedia di tombol Download.',
+          title: 'Stream gagal diputar',
+          description: err?.error?.message || 'Gagal memuat stream. Coba video lain atau coba lagi nanti.',
           variant: 'destructive',
         });
       });

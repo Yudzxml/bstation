@@ -1,0 +1,869 @@
+     1→'use client';
+     2→
+     3→import { useState, useRef, useEffect, useCallback } from 'react';
+     4→import { motion, AnimatePresence } from 'framer-motion';
+     5→import {
+     6→  Search, Play, User, Eye, Download,
+     7→  ThumbsUp, Clock, Film, ChevronDown, Loader2,
+     8→  Tv, ArrowLeft, Share2, ListVideo, Volume2,
+     9→  Zap, Settings
+    10→} from 'lucide-react';
+    11→
+    12→import { Button } from '@/components/ui/button';
+    13→import { Input } from '@/components/ui/input';
+    14→import { Badge } from '@/components/ui/badge';
+    15→import { Card, CardContent } from '@/components/ui/card';
+    16→import { Skeleton } from '@/components/ui/skeleton';
+    17→import {
+    18→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    19→} from '@/components/ui/select';
+    20→import {
+    21→  Tooltip, TooltipTrigger, TooltipContent,
+    22→} from '@/components/ui/tooltip';
+    23→import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
+    24→import { Separator } from '@/components/ui/separator';
+    25→import { useToast } from '@/hooks/use-toast';
+    26→
+    27→type BstationResult = import('@/lib/bstation').BstationResult;
+    28→
+    29→// ==================== Helpers ====================
+    30→
+    31→function formatDuration(seconds: number): string {
+    32→  if (!seconds || seconds <= 0) return '0:00';
+    33→  const h = Math.floor(seconds / 3600);
+    34→  const m = Math.floor((seconds % 3600) / 60);
+    35→  const s = seconds % 60;
+    36→  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    37→  return `${m}:${s.toString().padStart(2, '0')}`;
+    38→}
+    39→
+    40→function formatViews(views: string): string {
+    41→  const num = parseInt(views.replace(/[^\d]/g, ''), 10);
+    42→  if (isNaN(num)) return views;
+    43→  if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
+    44→  if (num >= 1_000) return `${(num / 1_000).toFixed(1)}K`;
+    45→  return String(num);
+    46→}
+    47→
+    48→function formatDate(dateStr: string): string {
+    49→  if (!dateStr) return '';
+    50→  try {
+    51→    const d = new Date(dateStr);
+    52→    if (isNaN(d.getTime())) return dateStr.split('T')[0] || dateStr;
+    53→    return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+    54→  } catch {
+    55→    return dateStr.split('T')[0] || dateStr;
+    56→  }
+    57→}
+    58→
+    59→// ==================== Page Component ====================
+    60→
+    61→export default function Home() {
+    62→  const [url, setUrl] = useState('');
+    63→  const [loading, setLoading] = useState(false);
+    64→  const [playerLoading, setPlayerLoading] = useState(false);
+    65→  const [result, setResult] = useState<BstationResult | null>(null);
+    66→  const [pageState, setPageState] = useState<'landing' | 'loading' | 'player'>('landing');
+    67→  const [qualityList, setQualityList] = useState<Array<{ index: number; label: string; bitrate: number; width: number; height: number }>>([]);
+    68→  const [selectedQuality, setSelectedQuality] = useState<string>('auto');
+    69→  const [descExpanded, setDescExpanded] = useState(false);
+    70→
+    71→  const videoRef = useRef<HTMLVideoElement>(null);
+    72→  const playerRef = useRef<dashjs.MediaPlayerClass | null>(null);
+    73→  const { toast } = useToast();
+    74→
+    75→  // ==================== Fetch Video ====================
+    76→
+    77→  const loadVideo = useCallback(async (videoUrl: string) => {
+    78→    if (!videoUrl.trim()) return;
+    79→    setLoading(true);
+    80→    setPageState('loading');
+    81→    setResult(null);
+    82→    setQualityList([]);
+    83→    setSelectedQuality('auto');
+    84→    setDescExpanded(false);
+    85→
+    86→    try {
+    87→      const res = await fetch(`/api/bstation?url=${encodeURIComponent(videoUrl.trim())}`);
+    88→      const data: BstationResult = await res.json();
+    89→      if (!data.success || !data.data?.videoInfo) {
+    90→        toast({
+    91→          title: 'Failed to load video',
+    92→          description: data.error || data.message || 'Could not parse the video. Please check the URL and try again.',
+    93→          variant: 'destructive',
+    94→        });
+    95→        setPageState('landing');
+    96→      } else {
+    97→        setResult(data);
+    98→        setPageState('player');
+    99→      }
+   100→    } catch (err) {
+   101→      toast({
+   102→        title: 'Network error',
+   103→        description: err instanceof Error ? err.message : 'An unexpected error occurred. Please try again.',
+   104→        variant: 'destructive',
+   105→      });
+   106→      setPageState('landing');
+   107→    } finally {
+   108→      setLoading(false);
+   109→    }
+   110→  }, [toast]);
+   111→
+   112→  const handleSubmit = useCallback((e: React.FormEvent) => {
+   113→    e.preventDefault();
+   114→    loadVideo(url);
+   115→  }, [url, loadVideo]);
+   116→
+   117→  const handleBack = useCallback(() => {
+   118→    // Destroy player
+   119→    if (playerRef.current) {
+   120→      playerRef.current.reset();
+   121→      playerRef.current = null;
+   122→    }
+   123→    setResult(null);
+   124→    setPageState('landing');
+   125→    setQualityList([]);
+   126→    setSelectedQuality('auto');
+   127→  }, []);
+   128→
+   129→  const handleRecommendationClick = useCallback((aid: number) => {
+   130→    const newUrl = `https://www.bilibili.tv/video/${aid}`;
+   131→    setUrl(newUrl);
+   132→    loadVideo(newUrl);
+   133→  }, [loadVideo]);
+   134→
+   135→  // ==================== DASH Player ====================
+   136→
+   137→  useEffect(() => {
+   138→    if (pageState !== 'player' || !result?.data?.videoInfo?.aid || !videoRef.current) {
+   139→      return;
+   140→    }
+   141→
+   142→    const aid = result.data.videoInfo.aid;
+   143→    const manifestUrl = `/api/manifest?aid=${aid}`;
+   144→
+   145→    setPlayerLoading(true);
+   146→
+   147→    // Small delay to ensure DOM is ready
+   148→    const timer = setTimeout(async () => {
+   149→      if (!videoRef.current) return;
+   150→
+   151→      // Destroy previous player
+   152→      if (playerRef.current) {
+   153→        playerRef.current.reset();
+   154→      }
+   155→
+   156→      // Dynamic import to avoid SSR window reference error
+   157→      const dashjsModule = await import('dashjs');
+   158→      const dashjsLib = dashjsModule.default || dashjsModule;
+   159→
+   160→      const player = dashjsLib.MediaPlayer().create();
+   161→      player.initialize(videoRef.current, manifestUrl, true);
+   162→
+   163→      player.on(dashjsLib.MediaPlayer.events.STREAM_INITIALIZED, () => {
+   164→        const bitrates = player.getBitrateInfoListFor('video');
+   165→        if (bitrates && bitrates.length > 0) {
+   166→          const qualities = bitrates.map((b, idx) => ({
+   167→            index: idx,
+   168→            label: `${b.height}P`,
+   169→            bitrate: b.bitrate,
+   170→            width: b.width,
+   171→            height: b.height,
+   172→          }));
+   173→          setQualityList(qualities);
+   174→        }
+   175→        setPlayerLoading(false);
+   176→      });
+   177→
+   178→      player.on(dashjsLib.MediaPlayer.events.ERROR, (e: unknown) => {
+   179→        const err = e as { error?: { message?: string } };
+   180→        setPlayerLoading(false);
+   181→        toast({
+   182→          title: 'Stream tidak dapat diputar',
+   183→          description: err?.error?.message || 'CDN memblokir akses dari server ini (403). Deploy ke server dengan IP yang diizinkan untuk streaming. Download URL tersedia di tombol Download.',
+   184→          variant: 'destructive',
+   185→        });
+   186→      });
+   187→
+   188→      // Fallback: if STREAM_INITIALIZED never fires
+   189→      const fallbackTimer = setTimeout(() => {
+   190→        setPlayerLoading(false);
+   191→        const bitrates = player.getBitrateInfoListFor('video');
+   192→        if (bitrates && bitrates.length > 0) {
+   193→          const qualities = bitrates.map((b, idx) => ({
+   194→            index: idx,
+   195→            label: `${b.height}P`,
+   196→            bitrate: b.bitrate,
+   197→            width: b.width,
+   198→            height: b.height,
+   199→          }));
+   200→          setQualityList(qualities);
+   201→        }
+   202→      }, 10000);
+   203→
+   204→      playerRef.current = player;
+   205→
+   206→      return () => {
+   207→        clearTimeout(fallbackTimer);
+   208→      };
+   209→    }, 100);
+   210→
+   211→    return () => {
+   212→      clearTimeout(timer);
+   213→    };
+   214→  }, [pageState, result, toast]);
+   215→
+   216→  // Cleanup on unmount
+   217→  useEffect(() => {
+   218→    return () => {
+   219→      if (playerRef.current) {
+   220→        playerRef.current.reset();
+   221→        playerRef.current = null;
+   222→      }
+   223→    };
+   224→  }, []);
+   225→
+   226→  // ==================== Quality Switch ====================
+   227→
+   228→  const handleQualityChange = useCallback((value: string) => {
+   229→    setSelectedQuality(value);
+   230→    if (!playerRef.current) return;
+   231→    if (value === 'auto') {
+   232→      playerRef.current.updateSettings({
+   233→        streaming: { abr: { autoSwitchQuality: true } },
+   234→      });
+   235→    } else {
+   236→      playerRef.current.updateSettings({
+   237→        streaming: { abr: { autoSwitchQuality: false } },
+   238→      });
+   239→      playerRef.current.setQualityFor('video', parseInt(value, 10));
+   240→    }
+   241→  }, []);
+   242→
+   243→  // ==================== Download ====================
+   244→
+   245→  const handleDownload = useCallback(() => {
+   246→    if (!result?.data) return;
+   247→    const videos = result.data.streaming?.videos || [];
+   248→    // Find highest quality with a baseUrl
+   249→    const downloadable = videos.filter(v => v.baseUrl);
+   250→    const target = downloadable.length > 0
+   251→      ? downloadable.reduce((best, v) => (v.bandwidth > best.bandwidth ? v : best), downloadable[0])
+   252→      : null;
+   253→
+   254→    if (!target) {
+   255→      toast({
+   256→        title: 'Download not available',
+   257→        description: 'No direct download URL found for this video. DASH segment-based videos cannot be downloaded directly.',
+   258→        variant: 'destructive',
+   259→      });
+   260→      return;
+   261→    }
+   262→
+   263→    const filename = `${result.data.videoInfo?.title || 'video'}.m4s`;
+   264→    const downloadUrl = `/api/download?url=${encodeURIComponent(target.baseUrl)}&filename=${encodeURIComponent(filename)}`;
+   265→    window.open(downloadUrl, '_blank');
+   266→  }, [result, toast]);
+   267→
+   268→  // ==================== Derived Data ====================
+   269→
+   270→  const videoInfo = result?.data?.videoInfo;
+   271→  const uploader = result?.data?.uploader;
+   272→  const stats = result?.data?.stats;
+   273→  const recommendations = result?.data?.recommendations || [];
+   274→  const streaming = result?.data?.streaming;
+   275→
+   276→  // ==================== Render ====================
+   277→
+   278→  return (
+   279→    <div className="dark min-h-screen flex flex-col bg-[#0f0f0f] text-white">
+   280→      {/* ==================== HEADER ==================== */}
+   281→      <header className="sticky top-0 z-50 border-b border-white/[0.08] bg-[#0f0f0f]/95 backdrop-blur-md">
+   282→        <div className="mx-auto max-w-7xl px-4 h-14 flex items-center gap-4">
+   283→          {/* Logo */}
+   284→          <button
+   285→            onClick={handleBack}
+   286→            className="flex items-center gap-2.5 shrink-0 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-500 rounded-lg p-1 -ml-1"
+   287→            aria-label={pageState === 'player' ? 'Back to home' : 'Bstation home'}
+   288→          >
+   289→            <AnimatePresence mode="wait">
+   290→              {pageState === 'player' ? (
+   291→                <motion.div
+   292→                  key="back"
+   293→                  initial={{ rotate: -90, opacity: 0 }}
+   294→                  animate={{ rotate: 0, opacity: 1 }}
+   295→                  exit={{ rotate: 90, opacity: 0 }}
+   296→                  transition={{ duration: 0.2 }}
+   297→                >
+   298→                  <ArrowLeft className="h-5 w-5 text-white/90 group-hover:text-pink-400 transition-colors" />
+   299→                </motion.div>
+   300→              ) : (
+   301→                <motion.div
+   302→                  key="logo"
+   303→                  initial={{ scale: 0.8, opacity: 0 }}
+   304→                  animate={{ scale: 1, opacity: 1 }}
+   305→                  exit={{ scale: 0.8, opacity: 0 }}
+   306→                  transition={{ duration: 0.2 }}
+   307→                >
+   308→                  <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-pink-500 to-pink-600 flex items-center justify-center shadow-lg shadow-pink-500/20">
+   309→                    <Tv className="h-4 w-4 text-white" />
+   310→                  </div>
+   311→                </motion.div>
+   312→              )}
+   313→            </AnimatePresence>
+   314→          </button>
+   315→
+   316→          <div className="flex-1 min-w-0">
+   317→            <h1 className="text-base font-bold tracking-tight truncate">
+   318→              <span className="text-pink-400">B</span>station
+   319→            </h1>
+   320→          </div>
+   321→
+   322→          {/* Compact search in player mode */}
+   323→          {pageState === 'player' && (
+   324→            <motion.form
+   325→              initial={{ width: 0, opacity: 0 }}
+   326→              animate={{ width: 'auto', opacity: 1 }}
+   327→              exit={{ width: 0, opacity: 0 }}
+   328→              transition={{ duration: 0.3 }}
+   329→              onSubmit={(e) => {
+   330→                e.preventDefault();
+   331→                if (url.trim()) loadVideo(url);
+   332→              }}
+   333→              className="hidden sm:flex items-center max-w-xs"
+   334→            >
+   335→              <div className="relative flex-1">
+   336→                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white/40" />
+   337→                <Input
+   338→                  value={url}
+   339→                  onChange={(e) => setUrl(e.target.value)}
+   340→                  placeholder="Paste bilibili.tv link..."
+   341→                  className="h-8 pl-8 pr-3 text-xs bg-white/[0.06] border-white/10 rounded-full focus-visible:border-pink-500/50 focus-visible:ring-pink-500/20"
+   342→                />
+   343→              </div>
+   344→            </motion.form>
+   345→          )}
+   346→        </div>
+   347→      </header>
+   348→
+   349→      {/* ==================== MAIN ==================== */}
+   350→      <main className="flex-1">
+   351→        <AnimatePresence mode="wait">
+   352→
+   353→          {/* ========== LANDING STATE ========== */}
+   354→          {pageState === 'landing' && (
+   355→            <motion.section
+   356→              key="landing"
+   357→              initial={{ opacity: 0 }}
+   358→              animate={{ opacity: 1 }}
+   359→              exit={{ opacity: 0, y: -20 }}
+   360→              transition={{ duration: 0.3 }}
+   361→              className="relative flex flex-col items-center justify-center min-h-[calc(100vh-8rem)] px-4"
+   362→              aria-label="Landing page with search"
+   363→            >
+   364→              {/* Background glow effects */}
+   365→              <div className="absolute inset-0 overflow-hidden pointer-events-none">
+   366→                <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[600px] h-[400px] bg-pink-500/[0.07] rounded-full blur-[120px]" />
+   367→                <div className="absolute bottom-1/4 left-1/3 w-[300px] h-[300px] bg-pink-600/[0.04] rounded-full blur-[100px]" />
+   368→              </div>
+   369→
+   370→              <div className="relative z-10 flex flex-col items-center text-center max-w-2xl w-full">
+   371→                {/* Logo icon */}
+   372→                <motion.div
+   373→                  initial={{ scale: 0, rotate: -180 }}
+   374→                  animate={{ scale: 1, rotate: 0 }}
+   375→                  transition={{ type: 'spring', stiffness: 200, damping: 20, delay: 0.1 }}
+   376→                  className="mb-6"
+   377→                >
+   378→                  <div className="h-20 w-20 sm:h-24 sm:w-24 rounded-2xl bg-gradient-to-br from-pink-500 via-pink-600 to-rose-600 flex items-center justify-center shadow-2xl shadow-pink-500/30">
+   379→                    <Play className="h-10 w-10 sm:h-12 sm:w-12 text-white ml-1" fill="white" />
+   380→                  </div>
+   381→                </motion.div>
+   382→
+   383→                {/* Brand name */}
+   384→                <motion.h1
+   385→                  initial={{ y: 20, opacity: 0 }}
+   386→                  animate={{ y: 0, opacity: 1 }}
+   387→                  transition={{ delay: 0.2, duration: 0.5 }}
+   388→                  className="text-4xl sm:text-5xl font-extrabold tracking-tight mb-3"
+   389→                >
+   390→                  <span className="bg-gradient-to-r from-pink-400 via-pink-500 to-rose-500 bg-clip-text text-transparent">
+   391→                    Bstation
+   392→                  </span>
+   393→                </motion.h1>
+   394→
+   395→                <motion.p
+   396→                  initial={{ y: 20, opacity: 0 }}
+   397→                  animate={{ y: 0, opacity: 1 }}
+   398→                  transition={{ delay: 0.3, duration: 0.5 }}
+   399→                  className="text-white/50 text-sm sm:text-base mb-10"
+   400→                >
+   401→                  Paste a bilibili.tv video link to start watching
+   402→                </motion.p>
+   403→
+   404→                {/* Search bar */}
+   405→                <motion.form
+   406→                  initial={{ y: 20, opacity: 0 }}
+   407→                  animate={{ y: 0, opacity: 1 }}
+   408→                  transition={{ delay: 0.4, duration: 0.5 }}
+   409→                  onSubmit={handleSubmit}
+   410→                  className="w-full max-w-xl"
+   411→                >
+   412→                  <div className="relative group">
+   413→                    <div className="absolute -inset-0.5 bg-gradient-to-r from-pink-500/20 via-pink-500/10 to-rose-500/20 rounded-2xl blur-sm opacity-0 group-focus-within:opacity-100 transition-opacity duration-300" />
+   414→                    <div className="relative flex items-center">
+   415→                      <Search className="absolute left-4 h-5 w-5 text-white/30 pointer-events-none" />
+   416→                      <Input
+   417→                        value={url}
+   418→                        onChange={(e) => setUrl(e.target.value)}
+   419→                        placeholder="https://www.bilibili.tv/video/..."
+   420→                        className="h-14 sm:h-16 pl-12 pr-32 text-base sm:text-lg bg-white/[0.06] border-white/[0.08] rounded-xl focus-visible:border-pink-500/50 focus-visible:ring-pink-500/20 placeholder:text-white/25"
+   421→                        aria-label="Bilibili.tv video URL"
+   422→                      />
+   423→                      <Button
+   424→                        type="submit"
+   425→                        disabled={loading || !url.trim()}
+   426→                        className="absolute right-2 h-10 sm:h-12 px-5 sm:px-7 bg-pink-500 hover:bg-pink-600 text-white font-semibold rounded-lg shadow-lg shadow-pink-500/25 transition-all hover:shadow-pink-500/40 disabled:opacity-50 min-w-[100px] sm:min-w-[120px]"
+   427→                      >
+   428→                        {loading ? (
+   429→                          <Loader2 className="h-4 w-4 animate-spin" />
+   430→                        ) : (
+   431→                          <>
+   432→                            <Play className="h-4 w-4 mr-1.5" fill="white" />
+   433→                            <span className="hidden sm:inline">Watch</span>
+   434→                          </>
+   435→                        )}
+   436→                      </Button>
+   437→                    </div>
+   438→                  </div>
+   439→                </motion.form>
+   440→
+   441→                {/* Feature hints */}
+   442→                <motion.div
+   443→                  initial={{ y: 20, opacity: 0 }}
+   444→                  animate={{ y: 0, opacity: 1 }}
+   445→                  transition={{ delay: 0.6, duration: 0.5 }}
+   446→                  className="mt-10 flex flex-wrap items-center justify-center gap-3 sm:gap-4"
+   447→                >
+   448→                  {[
+   449→                    { icon: Zap, label: 'DASH Streaming' },
+   450→                    { icon: Settings, label: 'Quality Control' },
+   451→                    { icon: Download, label: 'Download Video' },
+   452→                  ].map((item) => (
+   453→                    <div
+   454→                      key={item.label}
+   455→                      className="flex items-center gap-1.5 text-white/30 text-xs sm:text-sm"
+   456→                    >
+   457→                      <item.icon className="h-3.5 w-3.5" />
+   458→                      <span>{item.label}</span>
+   459→                    </div>
+   460→                  ))}
+   461→                </motion.div>
+   462→              </div>
+   463→            </motion.section>
+   464→          )}
+   465→
+   466→          {/* ========== LOADING STATE ========== */}
+   467→          {pageState === 'loading' && (
+   468→            <motion.section
+   469→              key="loading"
+   470→              initial={{ opacity: 0 }}
+   471→              animate={{ opacity: 1 }}
+   472→              exit={{ opacity: 0 }}
+   473→              transition={{ duration: 0.3 }}
+   474→              className="mx-auto max-w-5xl w-full px-4 py-8 space-y-6"
+   475→              aria-label="Loading video"
+   476→            >
+   477→              {/* Player skeleton */}
+   478→              <Skeleton className="w-full aspect-video rounded-2xl bg-white/[0.06]" />
+   479→              {/* Title skeleton */}
+   480→              <div className="space-y-3">
+   481→                <Skeleton className="h-7 w-3/4 bg-white/[0.06]" />
+   482→                <Skeleton className="h-5 w-1/3 bg-white/[0.06]" />
+   483→              </div>
+   484→              {/* Info bar skeleton */}
+   485→              <div className="flex items-center gap-4">
+   486→                <Skeleton className="h-10 w-10 rounded-full bg-white/[0.06]" />
+   487→                <div className="space-y-2">
+   488→                  <Skeleton className="h-4 w-32 bg-white/[0.06]" />
+   489→                  <Skeleton className="h-3 w-24 bg-white/[0.06]" />
+   490→                </div>
+   491→              </div>
+   492→              {/* Recommendations skeleton */}
+   493→              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+   494→                {Array.from({ length: 8 }).map((_, i) => (
+   495→                  <div key={i} className="space-y-2">
+   496→                    <Skeleton className="aspect-video rounded-xl bg-white/[0.06]" />
+   497→                    <Skeleton className="h-4 w-full bg-white/[0.06]" />
+   498→                    <Skeleton className="h-3 w-2/3 bg-white/[0.06]" />
+   499→                  </div>
+   500→                ))}
+   501→              </div>
+   502→            </motion.section>
+   503→          )}
+   504→
+   505→          {/* ========== PLAYER STATE ========== */}
+   506→          {pageState === 'player' && result && videoInfo && (
+   507→            <motion.section
+   508→              key="player"
+   509→              initial={{ opacity: 0, y: 20 }}
+   510→              animate={{ opacity: 1, y: 0 }}
+   511→              exit={{ opacity: 0, y: -20 }}
+   512→              transition={{ duration: 0.4 }}
+   513→              className="mx-auto max-w-5xl w-full px-4 py-4 sm:py-6 space-y-4 sm:space-y-6"
+   514→              aria-label="Video player and details"
+   515→            >
+   516→              {/* ---- VIDEO PLAYER ---- */}
+   517→              <div className="relative w-full aspect-video rounded-2xl overflow-hidden bg-black shadow-2xl shadow-black/50">
+   518→                <video
+   519→                  ref={videoRef}
+   520→                  className="w-full h-full"
+   521→                  controls
+   522→                  playsInline
+   523→                  aria-label={`Playing: ${videoInfo.title}`}
+   524→                />
+   525→                {/* Player loading overlay */}
+   526→                <AnimatePresence>
+   527→                  {playerLoading && (
+   528→                    <motion.div
+   529→                      initial={{ opacity: 0 }}
+   530→                      animate={{ opacity: 1 }}
+   531→                      exit={{ opacity: 0 }}
+   532→                      className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center gap-3"
+   533→                    >
+   534→                      <Loader2 className="h-10 w-10 text-pink-500 animate-spin" />
+   535→                      <span className="text-white/70 text-sm">Loading stream...</span>
+   536→                    </motion.div>
+   537→                  )}
+   538→                </AnimatePresence>
+   539→              </div>
+   540→
+   541→              {/* ---- TITLE ---- */}
+   542→              <div>
+   543→                <h2 className="text-lg sm:text-2xl font-bold leading-tight text-white/95 pr-12">
+   544→                  {videoInfo.title}
+   545→                </h2>
+   546→              </div>
+   547→
+   548→              {/* ---- UPLOADER + STATS ---- */}
+   549→              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+   550→                {/* Uploader */}
+   551→                <div className="flex items-center gap-3">
+   552→                  {uploader && (
+   553→                    <>
+   554→                      <Avatar className="h-10 w-10">
+   555→                        {uploader.avatar ? (
+   556→                          <AvatarImage src={uploader.avatar} alt={`${uploader.name}'s avatar`} />
+   557→                        ) : null}
+   558→                        <AvatarFallback className="bg-pink-500/20 text-pink-400">
+   559→                          <User className="h-4 w-4" />
+   560→                        </AvatarFallback>
+   561→                      </Avatar>
+   562→                      <div>
+   563→                        <p className="font-semibold text-sm text-white/90">{uploader.name}</p>
+   564→                        <p className="text-xs text-white/40">{uploader.follower} followers</p>
+   565→                      </div>
+   566→                    </>
+   567→                  )}
+   568→                </div>
+   569→
+   570→                {/* Stats */}
+   571→                {stats && (
+   572→                  <div className="flex items-center gap-4 text-sm">
+   573→                    <Tooltip>
+   574→                      <TooltipTrigger asChild>
+   575→                        <span className="flex items-center gap-1.5 text-white/50 hover:text-white/70 transition-colors cursor-default">
+   576→                          <Eye className="h-4 w-4" />
+   577→                          <span>{formatViews(stats.views)}</span>
+   578→                        </span>
+   579→                      </TooltipTrigger>
+   580→                      <TooltipContent side="bottom" className="bg-zinc-800 border-zinc-700 text-zinc-200">
+   581→                        {stats.views} views
+   582→                      </TooltipContent>
+   583→                    </Tooltip>
+   584→                    <Tooltip>
+   585→                      <TooltipTrigger asChild>
+   586→                        <span className="flex items-center gap-1.5 text-white/50 hover:text-pink-400 transition-colors cursor-default">
+   587→                          <ThumbsUp className="h-4 w-4" />
+   588→                          <span>{formatViews(stats.likes)}</span>
+   589→                        </span>
+   590→                      </TooltipTrigger>
+   591→                      <TooltipContent side="bottom" className="bg-zinc-800 border-zinc-700 text-zinc-200">
+   592→                        {stats.likes} likes
+   593→                      </TooltipContent>
+   594→                    </Tooltip>
+   595→                  </div>
+   596→                )}
+   597→              </div>
+   598→
+   599→              <Separator className="bg-white/[0.06]" />
+   600→
+   601→              {/* ---- QUALITY + DOWNLOAD BAR ---- */}
+   602→              <div className="flex flex-wrap items-center gap-3">
+   603→                {/* Quality Selector */}
+   604→                <Select value={selectedQuality} onValueChange={handleQualityChange}>
+   605→                  <SelectTrigger
+   606→                    className="w-[160px] bg-white/[0.06] border-white/10 text-white/90 rounded-lg h-10 focus:ring-pink-500/20"
+   607→                    aria-label="Video quality"
+   608→                  >
+   609→                    <Film className="h-4 w-4 mr-1.5 text-white/40" />
+   610→                    <SelectValue placeholder="Auto" />
+   611→                  </SelectTrigger>
+   612→                  <SelectContent className="bg-zinc-900 border-zinc-800 text-white">
+   613→                    <SelectItem value="auto" className="focus:bg-pink-500/10 focus:text-pink-400">
+   614→                      Auto
+   615→                    </SelectItem>
+   616→                    {qualityList.map((q) => (
+   617→                      <SelectItem
+   618→                        key={q.index}
+   619→                        value={String(q.index)}
+   620→                        className="focus:bg-pink-500/10 focus:text-pink-400"
+   621→                      >
+   622→                        <span className="flex items-center gap-2">
+   623→                          <span>{q.label}</span>
+   624→                          <span className="text-xs text-white/30">{q.width}x{q.height}</span>
+   625→                        </span>
+   626→                      </SelectItem>
+   627→                    ))}
+   628→                  </SelectContent>
+   629→                </Select>
+   630→
+   631→                {/* Duration badge */}
+   632→                {videoInfo.duration > 0 && (
+   633→                  <Badge
+   634→                    variant="secondary"
+   635→                    className="bg-white/[0.06] text-white/60 border-white/10 h-10 px-3 gap-1.5 rounded-lg"
+   636→                  >
+   637→                    <Clock className="h-3.5 w-3.5" />
+   638→                    {formatDuration(videoInfo.duration)}
+   639→                  </Badge>
+   640→                )}
+   641→
+   642→                {/* Date */}
+   643→                {videoInfo.formattedPubDate && (
+   644→                  <Badge
+   645→                    variant="secondary"
+   646→                    className="bg-white/[0.06] text-white/60 border-white/10 h-10 px-3 gap-1.5 rounded-lg"
+   647→                  >
+   648→                    {formatDate(videoInfo.formattedPubDate)}
+   649→                  </Badge>
+   650→                )}
+   651→
+   652→                {/* Spacer */}
+   653→                <div className="flex-1" />
+   654→
+   655→                {/* Share */}
+   656→                <Tooltip>
+   657→                  <TooltipTrigger asChild>
+   658→                    <Button
+   659→                      variant="ghost"
+   660→                      size="icon"
+   661→                      className="h-10 w-10 text-white/50 hover:text-white/90 hover:bg-white/[0.06] rounded-lg"
+   662→                      onClick={() => {
+   663→                        if (navigator.clipboard) {
+   664→                          navigator.clipboard.writeText(url);
+   665→                          toast({ title: 'Link copied!', description: 'Video URL copied to clipboard.' });
+   666→                        }
+   667→                      }}
+   668→                      aria-label="Copy video link"
+   669→                    >
+   670→                      <Share2 className="h-4 w-4" />
+   671→                    </Button>
+   672→                  </TooltipTrigger>
+   673→                  <TooltipContent side="bottom" className="bg-zinc-800 border-zinc-700 text-zinc-200">
+   674→                    Copy link
+   675→                  </TooltipContent>
+   676→                </Tooltip>
+   677→
+   678→                {/* Download */}
+   679→                <Tooltip>
+   680→                  <TooltipTrigger asChild>
+   681→                    <Button
+   682→                      variant="ghost"
+   683→                      size="sm"
+   684→                      className="h-10 px-4 text-white/50 hover:text-pink-400 hover:bg-pink-500/10 border border-white/10 hover:border-pink-500/30 rounded-lg gap-2 transition-all"
+   685→                      onClick={handleDownload}
+   686→                      aria-label="Download video"
+   687→                    >
+   688→                      <Download className="h-4 w-4" />
+   689→                      <span className="hidden sm:inline">Download</span>
+   690→                    </Button>
+   691→                  </TooltipTrigger>
+   692→                  <TooltipContent side="bottom" className="bg-zinc-800 border-zinc-700 text-zinc-200">
+   693→                    Download highest quality
+   694→                  </TooltipContent>
+   695→                </Tooltip>
+   696→              </div>
+   697→
+   698→              {/* ---- DESCRIPTION ---- */}
+   699→              {videoInfo.desc && (
+   700→                <Card className="bg-white/[0.03] border-white/[0.06] rounded-xl overflow-hidden py-0 gap-0">
+   701→                  <CardContent className="p-4">
+   702→                    <button
+   703→                      onClick={() => setDescExpanded(!descExpanded)}
+   704→                      className="w-full text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-500 rounded-lg p-1 -m-1"
+   705→                      aria-expanded={descExpanded}
+   706→                      aria-label={descExpanded ? 'Collapse description' : 'Expand description'}
+   707→                    >
+   708→                      <p className={`text-sm text-white/60 leading-relaxed whitespace-pre-wrap ${!descExpanded ? 'line-clamp-2' : ''}`}>
+   709→                        {videoInfo.desc}
+   710→                      </p>
+   711→                      <span className="inline-flex items-center gap-1 text-xs text-pink-400 mt-2 hover:text-pink-300 transition-colors">
+   712→                        {descExpanded ? 'Show less' : 'Show more'}
+   713→                        <ChevronDown className={`h-3.5 w-3.5 transition-transform ${descExpanded ? 'rotate-180' : ''}`} />
+   714→                      </span>
+   715→                    </button>
+   716→                  </CardContent>
+   717→                </Card>
+   718→              )}
+   719→
+   720→              {/* ---- STREAMING INFO (collapsible) ---- */}
+   721→              {streaming && (streaming.videos.length > 0 || streaming.audios.length > 0) && (
+   722→                <Card className="bg-white/[0.03] border-white/[0.06] rounded-xl overflow-hidden py-0 gap-0">
+   723→                  <button
+   724→                    onClick={() => setDescExpanded(!descExpanded)}
+   725→                    className="w-full p-4 flex items-center justify-between focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-500 rounded-t-xl"
+   726→                    aria-expanded={descExpanded}
+   727→                  >
+   728→                    <div className="flex items-center gap-2">
+   729→                      <Volume2 className="h-4 w-4 text-pink-400" />
+   730→                      <span className="text-sm font-medium text-white/80">
+   731→                        Stream Info
+   732→                      </span>
+   733→                      <Badge variant="secondary" className="bg-white/[0.06] text-white/40 border-white/10 text-[10px] h-5 px-1.5">
+   734→                        {streaming.videos.length}V + {streaming.audios.length}A
+   735→                      </Badge>
+   736→                    </div>
+   737→                    <ChevronDown className={`h-4 w-4 text-white/30 transition-transform ${descExpanded ? 'rotate-180' : ''}`} />
+   738→                  </button>
+   739→                  <AnimatePresence>
+   740→                    {descExpanded && (
+   741→                      <motion.div
+   742→                        initial={{ height: 0, opacity: 0 }}
+   743→                        animate={{ height: 'auto', opacity: 1 }}
+   744→                        exit={{ height: 0, opacity: 0 }}
+   745→                        transition={{ duration: 0.3 }}
+   746→                        className="overflow-hidden"
+   747→                      >
+   748→                        <div className="px-4 pb-4 space-y-2 max-h-64 overflow-y-auto custom-scrollbar">
+   749→                          {streaming.videos.map((v, i) => (
+   750→                            <div
+   751→                              key={`v-${i}`}
+   752→                              className="flex items-center justify-between p-2.5 rounded-lg bg-white/[0.03] hover:bg-white/[0.06] transition-colors"
+   753→                            >
+   754→                              <div className="flex items-center gap-2 min-w-0 flex-1">
+   755→                                <Badge
+   756→                                  className={v.isDash ? 'bg-white/10 text-white/60 text-[10px] h-5' : 'bg-pink-500/20 text-pink-400 text-[10px] h-5 border-pink-500/20'}
+   757→                                  variant={v.isDash ? 'outline' : 'secondary'}
+   758→                                >
+   759→                                  {v.qualityLabel}
+   760→                                </Badge>
+   761→                                <span className="text-[11px] text-white/30 font-mono">{v.codec}</span>
+   762→                                <span className="text-[11px] text-white/30">{v.width}x{v.height}</span>
+   763→                              </div>
+   764→                              {v.isDash && (
+   765→                                <Badge variant="outline" className="text-[9px] h-4 px-1 border-amber-500/30 text-amber-400/60">DASH</Badge>
+   766→                              )}
+   767→                            </div>
+   768→                          ))}
+   769→                        </div>
+   770→                      </motion.div>
+   771→                    )}
+   772→                  </AnimatePresence>
+   773→                </Card>
+   774→              )}
+   775→
+   776→              {/* ---- RECOMMENDATIONS ---- */}
+   777→              {recommendations.length > 0 && (
+   778→                <section aria-label="Recommended videos">
+   779→                  <div className="flex items-center gap-2 mb-4">
+   780→                    <ListVideo className="h-5 w-5 text-pink-400" />
+   781→                    <h3 className="text-base sm:text-lg font-semibold text-white/90">Recommended</h3>
+   782→                  </div>
+   783→                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4 max-h-[500px] overflow-y-auto pr-1 custom-scrollbar">
+   784→                    {recommendations.map((rec, i) => (
+   785→                      <motion.button
+   786→                        key={rec.aid}
+   787→                        initial={{ opacity: 0, y: 20 }}
+   788→                        animate={{ opacity: 1, y: 0 }}
+   789→                        transition={{ delay: i * 0.05, duration: 0.3 }}
+   790→                        onClick={() => handleRecommendationClick(rec.aid)}
+   791→                        className="group text-left rounded-xl overflow-hidden border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.06] hover:border-white/[0.12] transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-500"
+   792→                        aria-label={`Watch: ${rec.title}`}
+   793→                      >
+   794→                        <div className="relative aspect-video overflow-hidden">
+   795→                          <img
+   796→                            src={rec.cover}
+   797→                            alt={`Thumbnail for ${rec.title}`}
+   798→                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+   799→                            loading="lazy"
+   800→                          />
+   801→                          <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
+   802→                          {rec.duration > 0 && (
+   803→                            <span className="absolute bottom-1.5 right-1.5 bg-black/80 text-white text-[10px] font-medium px-1.5 py-0.5 rounded">
+   804→                              {formatDuration(rec.duration)}
+   805→                            </span>
+   806→                          )}
+   807→                          <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+   808→                            <div className="h-10 w-10 rounded-full bg-pink-500/90 flex items-center justify-center backdrop-blur-sm">
+   809→                              <Play className="h-4 w-4 text-white ml-0.5" fill="white" />
+   810→                            </div>
+   811→                          </div>
+   812→                        </div>
+   813→                        <div className="p-2.5 sm:p-3">
+   814→                          <p className="text-xs sm:text-sm font-medium text-white/80 line-clamp-2 leading-snug group-hover:text-white transition-colors">
+   815→                            {rec.title}
+   816→                          </p>
+   817→                          <p className="text-[10px] sm:text-xs text-white/35 mt-1.5 truncate">
+   818→                            {rec.author}
+   819→                          </p>
+   820→                          <p className="text-[10px] sm:text-xs text-white/25 mt-0.5">
+   821→                            {formatViews(rec.view)} views
+   822→                          </p>
+   823→                        </div>
+   824→                      </motion.button>
+   825→                    ))}
+   826→                  </div>
+   827→                </section>
+   828→              )}
+   829→            </motion.section>
+   830→          )}
+   831→
+   832→        </AnimatePresence>
+   833→      </main>
+   834→
+   835→      {/* ==================== FOOTER ==================== */}
+   836→      <footer className="mt-auto border-t border-white/[0.06] bg-[#0a0a0a] pb-[env(safe-area-inset-bottom)]">
+   837→        <div className="mx-auto max-w-7xl px-4 h-12 flex items-center justify-between">
+   838→          <div className="flex items-center gap-2 text-xs text-white/25">
+   839→            <div className="h-5 w-5 rounded bg-gradient-to-br from-pink-500 to-pink-600 flex items-center justify-center">
+   840→              <Tv className="h-3 w-3 text-white" />
+   841→            </div>
+   842→            <span>Bstation Stream</span>
+   843→          </div>
+   844→          <span className="text-xs text-white/20">
+   845→            Powered by dash.js
+   846→          </span>
+   847→        </div>
+   848→      </footer>
+   849→
+   850→      {/* ==================== CUSTOM SCROLLBAR STYLES ==================== */}
+   851→      <style jsx global>{`
+   852→        .custom-scrollbar::-webkit-scrollbar {
+   853→          width: 6px;
+   854→        }
+   855→        .custom-scrollbar::-webkit-scrollbar-track {
+   856→          background: transparent;
+   857→        }
+   858→        .custom-scrollbar::-webkit-scrollbar-thumb {
+   859→          background: rgba(255, 255, 255, 0.1);
+   860→          border-radius: 3px;
+   861→        }
+   862→        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+   863→          background: rgba(255, 255, 255, 0.2);
+   864→        }
+   865→      `}</style>
+   866→    </div>
+   867→  );
+   868→}
+   869→

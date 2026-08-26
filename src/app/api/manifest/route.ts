@@ -1,59 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-
-interface PlayUrlVideoResource {
-  id: string;
-  quality: number;
-  bandwidth: number;
-  codecs: string;
-  width: number;
-  height: number;
-  url: string;
-  mime_type: string;
-  frame_rate: string;
-  duration: number;
-  segment_base?: {
-    range: string;
-    index_range: string;
-  };
-}
-
-interface PlayUrlAudioResource {
-  id: string;
-  quality: number;
-  bandwidth: number;
-  codecs: string;
-  url: string;
-  mime_type: string;
-  duration: number;
-}
-
-interface StreamInfo {
-  quality: number;
-  desc_words: string;
-}
-
-async function fetchPlayUrl(aid: string) {
-  const api = new URL('https://api.bilibili.tv/intl/gateway/web/playurl');
-  api.searchParams.set('s_locale', 'id');
-  api.searchParams.set('platform', 'web');
-  api.searchParams.set('aid', aid);
-
-  const resp = await fetch(api.toString(), {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Accept': 'application/json, text/plain, */*',
-      'Referer': 'https://www.bilibili.tv/',
-      'Origin': 'https://www.bilibili.tv',
-      'Sec-Fetch-Dest': 'empty',
-      'Sec-Fetch-Mode': 'cors',
-      'Sec-Fetch-Site': 'same-site'
-    }
-  });
-
-  if (!resp.ok) return null;
-  const json = await resp.json();
-  return json?.data?.playurl || null;
-}
+import { fetchPlayInfo } from '@/lib/bstation';
 
 function escapeXml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -67,62 +13,64 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Missing aid parameter' }, { status: 400 });
   }
 
-  const playurl = await fetchPlayUrl(aid);
-  if (!playurl) {
-    return NextResponse.json({ error: 'Failed to fetch playurl' }, { status: 502 });
+  const playinfo = await fetchPlayInfo(aid);
+  if (!playinfo || (playinfo.videos.length === 0 && playinfo.audios.length === 0)) {
+    return NextResponse.json({ error: 'Failed to fetch playurl', status: 'no_streams' }, { status: 502 });
   }
 
-  const videoList: Array<{ video_resource: PlayUrlVideoResource; stream_info: StreamInfo }> = playurl.video || [];
-  const audioList: PlayUrlAudioResource[] = playurl.audio_resource || [];
-  const durationMs = playurl.duration || 0;
-  const durationSec = (durationMs / 1000).toFixed(3);
+  const videos = playinfo.videos;
+  const audios = playinfo.audios;
+  const durationSec = playinfo.duration.toFixed(3);
 
-  // Build proxy base URL
-  const baseUrl = request.headers.get('host') 
+  // Build proxy base URL (used only as fallback)
+  const host = request.headers.get('host') 
     ? `http://${request.headers.get('host')}` 
     : 'http://localhost:3000';
 
   // Group videos by codec family (AVC vs HEVC)
-  const avcVideos = videoList.filter(v => v.video_resource.codecs.startsWith('avc'));
-  const hevcVideos = videoList.filter(v => v.video_resource.codecs.startsWith('hev'));
+  const avcVideos = videos.filter(v => v.codec.startsWith('avc'));
+  const hevcVideos = videos.filter(v => v.codec.startsWith('hev'));
 
   // Use AVC as primary, fall back to HEVC if no AVC
   const primaryVideos = avcVideos.length > 0 ? avcVideos : hevcVideos;
 
-  // Build video representations (only streams with direct URLs)
+  // Build video representations using DIRECT CDN URLs
+  // The CDN has Access-Control-Allow-Origin: * so browser can fetch directly
   let videoReps = '';
   for (const v of primaryVideos) {
-    const vr = v.video_resource;
-    if (!vr.url) continue; // Skip DASH-only (no auth URL)
+    if (!v.baseUrl) continue;
 
-    const proxyUrl = `${baseUrl}/api/proxy?url=${encodeURIComponent(vr.url)}`;
-    const initRange = vr.segment_base?.range || '0-991';
-    const idxRange = vr.segment_base?.index_range || '992-1239';
-    const frameRate = vr.frame_rate ? vr.frame_rate.split('/')[0] : '30';
+    const videoUrl = v.baseUrl;
+    const frameRate = v.frameRate || '30';
+    // frameRate may be 'num/den' format - keep as-is for DASH spec compliance
 
-    videoReps += `
-      <Representation id="v${vr.quality}" bandwidth="${vr.bandwidth}" width="${vr.width}" height="${vr.height}" codecs="${escapeXml(vr.codecs)}" frameRate="${frameRate}">
-        <SegmentBase indexRange="${idxRange}">
-          <Initialization range="${initRange}"/>
-        </SegmentBase>
-        <BaseURL>${escapeXml(proxyUrl)}</BaseURL>
-      </Representation>`;
+    if (v.isDash && v.segmentBase) {
+      videoReps += `
+        <Representation id="v${v.qualityId}" bandwidth="${v.bandwidth}" width="${v.width}" height="${v.height}" codecs="${escapeXml(v.codec)}" frameRate="${frameRate}">
+          <SegmentBase indexRange="${escapeXml(v.segmentBase.indexRange)}">
+            <Initialization range="${escapeXml(v.segmentBase.range)}"/>
+          </SegmentBase>
+          <BaseURL>${escapeXml(videoUrl)}</BaseURL>
+        </Representation>`;
+    } else {
+      videoReps += `
+        <Representation id="v${v.qualityId}" bandwidth="${v.bandwidth}" width="${v.width}" height="${v.height}" codecs="${escapeXml(v.codec)}">
+          <BaseURL>${escapeXml(videoUrl)}</BaseURL>
+        </Representation>`;
+    }
   }
 
   // Build audio representations
   let audioReps = '';
-  // Deduplicate audio by quality
   const seenAudio = new Set<number>();
-  for (const a of audioList) {
-    if (!a.url || seenAudio.has(a.quality)) continue;
-    seenAudio.add(a.quality);
-
-    const proxyUrl = `${baseUrl}/api/proxy?url=${encodeURIComponent(a.url)}`;
+  for (const a of audios) {
+    if (!a.baseUrl || seenAudio.has(a.qualityId)) continue;
+    seenAudio.add(a.qualityId);
 
     audioReps += `
-      <Representation id="a${a.quality}" bandwidth="${a.bandwidth}" codecs="${escapeXml(a.codecs)}">
-        <BaseURL>${escapeXml(proxyUrl)}</BaseURL>
-      </Representation>`;
+        <Representation id="a${a.qualityId}" bandwidth="${a.bandwidth}" codecs="${escapeXml(a.codec)}">
+          <BaseURL>${escapeXml(a.baseUrl)}</BaseURL>
+        </Representation>`;
   }
 
   const mpd = `<?xml version="1.0" encoding="utf-8"?>

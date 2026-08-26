@@ -61,3 +61,29 @@ Stage Summary:
 - CDN blocks from sandbox IP (403) — works when deployed on proper server
 - All UI components verified working via Agent Browser
 - Zero lint errors
+---
+Task ID: 1
+Agent: Main Agent
+Task: Fix 403 on bilibili.tv playurl API and streaming
+
+Work Log:
+- Analyzed current code: bstation.ts, manifest/route.ts, proxy/route.ts, page.tsx
+- Identified root cause: bilibili.tv playurl API returns 403 from server/data-center IPs
+- Implemented multi-strategy streaming extraction in bstation.ts:
+  - Strategy 1: Extract __playinfo__ from HTML (base64-encoded JSON in <script> tag) - **WORKS**
+  - Strategy 2: Extract from __NEXT_DATA__ (Next.js SSG data)
+  - Strategy 3: Extract from __initialState (already parsed)
+  - Strategy 4: PlayURL API with page cookies (fallback)
+- Discovered CDN (Akamai) has Access-Control-Allow-Origin: * - browser can fetch directly
+- Changed manifest/route.ts to use direct CDN URLs instead of /api/proxy
+- Added buvid3/buvid4 cookie generation for page fetch
+- Fixed frameRate parsing (was splitting '16000/528' incorrectly)
+- Verified: __playinfo__ extraction returns 12 video + 3 audio streams successfully
+- Verified: DASH manifest generated with correct SegmentBase, direct CDN URLs
+- CDN blocks data center IPs (403 from server), but allows browser requests (CORS: *)
+
+Stage Summary:
+- playurl 403 fixed: streaming data now extracted from __playinfo__ in page HTML
+- Manifest uses direct CDN URLs so browser fetches from user's IP (not server)
+- Proxy route still exists for backward compatibility but not used by DASH player
+- Key files modified: src/lib/bstation.ts, src/app/api/manifest/route.ts, src/app/page.tsx

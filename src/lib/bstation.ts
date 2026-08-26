@@ -13,6 +13,10 @@ interface VideoStream {
   frameRate: string;
   size: number;
   isDash: boolean;
+  segmentBase?: {
+    range: string;
+    indexRange: string;
+  };
 }
 
 interface AudioStream {
@@ -81,7 +85,7 @@ interface BstationResult {
 }
 
 // ====================================================================
-// FIX #1: IIFE-aware full expression extraction
+// IIFE-aware full expression extraction
 // ====================================================================
 
 function extractIifeObject(scriptContent: string, marker: string): object | null {
@@ -193,8 +197,6 @@ function extractBalancedParenExpr(content: string): object | null {
   try { return new Function(`return (${content.substring(braceStart, braceEnd)})`)(); } catch { return null; }
 }
 
-// ==================== FIX #2: Class name fix ====================
-
 function getQualityLabel(id: number): string {
   const map: Record<number, string> = {
     112: '1080P+ (HD)',
@@ -209,53 +211,133 @@ function getQualityLabel(id: number): string {
 }
 
 // ====================================================================
-// FIX #4: Fetch streaming URLs via bilibili.tv PlayURL API
+// Playinfo extraction from embedded page data
 // ====================================================================
-// Endpoint: GET https://api.bilibili.tv/intl/gateway/web/playurl
-// Params: s_locale, platform, aid
-// Response: data.playurl.video[].video_resource & data.playurl.audio_resource[]
-// Thanks to PHP reference code from user
 
-async function fetchPlayUrl(aid: string, locale: string = 'id'): Promise<{
+interface PlayinfoData {
   duration: number;
   videos: VideoStream[];
   audios: AudioStream[];
-} | null> {
-  try {
-    const api = new URL('https://api.bilibili.tv/intl/gateway/web/playurl');
-    api.searchParams.set('s_locale', locale);
-    api.searchParams.set('platform', 'web');
-    api.searchParams.set('aid', aid);
+}
 
-    const resp = await fetch(api.toString(), {
-      method: 'GET',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.5672.92 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': `${locale},en-US;q=0.9,en;q=0.8`,
-        'Referer': 'https://www.bilibili.tv/',
-        'Origin': 'https://www.bilibili.tv',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-site'
+/**
+ * Extract __playinfo__ from the HTML page.
+ * bilibili.tv embeds playinfo as base64-encoded JSON in a <script> tag.
+ */
+function extractPlayinfoFromHtml(html: string): PlayinfoData | null {
+  try {
+    const $ = cheerio.load(html);
+    let playinfoBase64: string | null = null;
+
+    $('script').each((_i, el) => {
+      const content = $(el).html() || '';
+      // Pattern 1: window.__playinfo__=base64string
+      const match1 = content.match(/window\.__playinfo__\s*=\s*(['"])([A-Za-z0-9+/=]+)\1/);
+      if (match1) {
+        playinfoBase64 = match1[2];
+        return false;
+      }
+      // Pattern 2: window.__playinfo__=base64string (no quotes)
+      const match2 = content.match(/window\.__playinfo__\s*=\s*([A-Za-z0-9+/=]+)/);
+      if (match2) {
+        playinfoBase64 = match2[1];
+        return false;
+      }
+      // Pattern 3: __playinfo__=base64string
+      const match3 = content.match(/__playinfo__\s*=\s*(['"]?)([A-Za-z0-9+/=]+)\1/);
+      if (match3) {
+        playinfoBase64 = match3[2];
+        return false;
       }
     });
 
-    if (!resp.ok) return null;
+    if (!playinfoBase64) return null;
 
-    const json = (await resp.json()) as Record<string, unknown>;
-    if (!json.data || typeof json.data !== 'object') return null;
+    // Decode base64 - may have URL-safe chars
+    let decoded: string;
+    try {
+      decoded = Buffer.from(playinfoBase64, 'base64').toString('utf-8');
+    } catch {
+      return null;
+    }
 
-    const data = json.data as Record<string, unknown>;
-    const playurl = (data.playurl || {}) as Record<string, unknown>;
+    const json = JSON.parse(decoded) as Record<string, unknown>;
+    const data = (json.data || json) as Record<string, unknown>;
+    return parsePlayinfoResponse(data);
+  } catch {
+    return null;
+  }
+}
 
+/**
+ * Extract playinfo from __NEXT_DATA__ (Next.js SSG data)
+ */
+function extractPlayinfoFromNextData(html: string): PlayinfoData | null {
+  try {
+    const $ = cheerio.load(html);
+    let nextData: Record<string, unknown> | null = null;
+
+    $('script#__NEXT_DATA__').each((_i, el) => {
+      const content = $(el).html() || '';
+      try {
+        nextData = JSON.parse(content);
+      } catch { /* ignore */ }
+      return false;
+    });
+
+    if (!nextData?.props?.pageProps) return null;
+    const pageProps = nextData.props.pageProps as Record<string, unknown>;
+    const playInfo = pageProps.playInfo || pageProps.playinfo || pageProps.play_info;
+    if (!playInfo || typeof playInfo !== 'object') return null;
+
+    return parsePlayinfoResponse(playInfo as Record<string, unknown>);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extract playinfo from __initialState (already parsed)
+ */
+function extractPlayinfoFromInitialState(initialState: Record<string, unknown>): PlayinfoData | null {
+  try {
+    // Try various paths in __initialState
+    const playerData = initialState.playerData as Record<string, unknown> | undefined;
+    if (playerData?.playUrl) {
+      return parsePlayinfoResponse(playerData.playUrl as Record<string, unknown>);
+    }
+
+    const player = initialState.player as Record<string, unknown> | undefined;
+    if (player?.playUrl) {
+      return parsePlayinfoResponse(player.playUrl as Record<string, unknown>);
+    }
+
+    const playInfo = initialState.playInfo as Record<string, unknown> | undefined;
+    if (playInfo) {
+      return parsePlayinfoResponse(playInfo);
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse playinfo response data into our standard format
+ */
+function parsePlayinfoResponse(data: Record<string, unknown>): PlayinfoData | null {
+  try {
+    const playurl = (data.playurl || data) as Record<string, unknown>;
     const videoList = (playurl.video || []) as Array<Record<string, unknown>>;
-    const audioList = (playurl.audio_resource || []) as Array<Record<string, unknown>>;
+    const audioList = (playurl.audio_resource || playurl.audio || []) as Array<Record<string, unknown>>;
+    const durationMs = (playurl.duration as number) || 0;
 
     const videos: VideoStream[] = videoList.map(v => {
-      const vr = (v.video_resource || {}) as Record<string, unknown>;
+      const vr = (v.video_resource || v) as Record<string, unknown>;
       const si = (v.stream_info || {}) as Record<string, unknown>;
       const url = (vr.url as string) || '';
+      const segBase = vr.segment_base as Record<string, unknown> | undefined;
       return {
         qualityId: (vr.quality as number) || 0,
         qualityLabel: (si.desc_words as string) || getQualityLabel(vr.quality as number),
@@ -268,7 +350,11 @@ async function fetchPlayUrl(aid: string, locale: string = 'id'): Promise<{
         height: (vr.height as number) || 0,
         frameRate: (vr.frame_rate as string) || '',
         size: (vr.size as number) || 0,
-        isDash: !url && !!(vr.segment_base)
+        isDash: !!segBase,
+        segmentBase: segBase ? {
+          range: (segBase.range as string) || '0-991',
+          indexRange: (segBase.index_range as string) || '992-1239',
+        } : undefined,
       };
     });
 
@@ -283,7 +369,7 @@ async function fetchPlayUrl(aid: string, locale: string = 'id'): Promise<{
     }));
 
     return {
-      duration: (playurl.duration as number) || 0,
+      duration: Math.round(durationMs / 1000),
       videos,
       audios
     };
@@ -292,41 +378,187 @@ async function fetchPlayUrl(aid: string, locale: string = 'id'): Promise<{
   }
 }
 
-// ==================== FIX #3: Stat path & type fix ====================
+// ====================================================================
+// Generate buvid3/buvid4 device fingerprint cookies
+// ====================================================================
+
+function generateBuvid3(): string {
+  const hex = '0123456789abcdef';
+  const parts: string[] = [];
+  for (let i = 0; i < 32; i++) {
+    parts.push(hex[Math.floor(Math.random() * 16)]);
+  }
+  const uuid = [
+    parts.slice(0, 8).join(''),
+    parts.slice(8, 12).join(''),
+    parts.slice(12, 16).join(''),
+    parts.slice(16, 20).join(''),
+    parts.slice(20, 32).join('')
+  ].join('-');
+  return `${uuid}infoc`;
+}
+
+function generateBuvid4(): string {
+  const hex = '0123456789ABCDEF';
+  const parts: string[] = [];
+  for (let i = 0; i < 32; i++) {
+    parts.push(hex[Math.floor(Math.random() * 16)]);
+  }
+  const uuid = [
+    parts.slice(0, 8).join(''),
+    parts.slice(8, 12).join(''),
+    parts.slice(12, 16).join(''),
+    parts.slice(16, 20).join(''),
+    parts.slice(20, 32).join('')
+  ].join('-');
+  const randomPad = Math.floor(Math.random() * 100000) + 100000;
+  const randomHex = Array.from({ length: 8 }, () => hex[Math.floor(Math.random() * 16)]).join('');
+  return `${uuid}48261-${randomPad}-x${randomHex}`;
+}
+
+// ====================================================================
+// Fetch streaming URLs via bilibili.tv PlayURL API (with cookies)
+// ====================================================================
+
+async function fetchPlayUrlApi(aid: string, pageCookies: string, locale: string = 'id'): Promise<PlayinfoData | null> {
+  try {
+    const buvid3 = generateBuvid3();
+    const buvid4 = generateBuvid4();
+
+    const api = new URL('https://api.bilibili.tv/intl/gateway/web/playurl');
+    api.searchParams.set('s_locale', locale);
+    api.searchParams.set('platform', 'web');
+    api.searchParams.set('aid', aid);
+
+    // Build cookie string: page cookies + generated buvid
+    const cookieParts = pageCookies.split(';').map(c => c.trim()).filter(Boolean);
+    cookieParts.push(`buvid3=${buvid3}`);
+    cookieParts.push(`buvid4=${buvid4}`);
+    cookieParts.push('bstar-web-lang=id');
+    const cookieStr = cookieParts.join('; ');
+
+    const resp = await fetch(api.toString(), {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': `${locale},en-US;q=0.9,en;q=0.8`,
+        'Referer': 'https://www.bilibili.tv/',
+        'Origin': 'https://www.bilibili.tv',
+        'Cookie': cookieStr,
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-site',
+        'Sec-Ch-Ua': '"Chromium";v="125", "Not.A/Brand";v="99"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"',
+      }
+    });
+
+    if (!resp.ok) return null;
+
+    const json = (await resp.json()) as Record<string, unknown>;
+    if (!json.data || typeof json.data !== 'object') return null;
+
+    const data = json.data as Record<string, unknown>;
+    return parsePlayinfoResponse(data);
+  } catch {
+    return null;
+  }
+}
+
+// ====================================================================
+// Main detail function - multi-strategy streaming extraction
+// ====================================================================
 
 async function detail(url: string): Promise<BstationResult> {
   try {
-    // Step 1: Fetch HTML and parse __initialState
+    // Step 1: Fetch HTML page
+    const buvid3 = generateBuvid3();
+    const buvid4 = generateBuvid4();
+
     const response = await fetch(url, {
       method: 'GET',
       headers: {
-        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
         'accept-language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
         'cache-control': 'no-cache',
-        pragma: 'no-cache',
-        'sec-ch-ua': '"Chromium";v="139", "Not;A=Brand";v="99"',
-        'sec-ch-ua-mobile': '?1',
-        'sec-ch-ua-platform': '"Android"',
+        'pragma': 'no-cache',
+        'sec-ch-ua': '"Chromium";v="125", "Not.A/Brand";v="99"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
         'sec-fetch-dest': 'document',
         'sec-fetch-mode': 'navigate',
-        'sec-fetch-site': 'same-origin',
+        'sec-fetch-site': 'none',
         'sec-fetch-user': '?1',
         'upgrade-insecure-requests': '1',
-        cookie: 'buvid3=43732f08-47c0-4e94-a2aa-37b5e1fc888963545infoc; buvid4=A79D9F34-506A-A589-C757-8D192192F95C48261-126010922-x3kuoMrzvXMWbClRBF%2FDPg%3D%3D; bstar-web-lang=id'
+        'cookie': `buvid3=${buvid3}; buvid4=${buvid4}; bstar-web-lang=id`,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
       }
     });
     if (!response.ok) throw new Error(`HTTP Error ${response.status}`);
+
     const html = await response.text();
     const parsed = parse(html);
 
-    // Step 2: Fetch streaming URLs via PlayURL API
+    // Step 2: Extract streaming data using multi-strategy
     if (parsed.success && parsed.data.videoInfo?.aid) {
-      const playurlData = await fetchPlayUrl(String(parsed.data.videoInfo.aid));
-      if (playurlData) {
+      const aid = String(parsed.data.videoInfo.aid);
+      let playinfoData: PlayinfoData | null = null;
+
+      // Collect cookies from page response for API fallback
+      const setCookies = response.headers.getSetCookie ? response.headers.getSetCookie() : [];
+      const pageCookieStr = setCookies
+        .map(c => c.split(';')[0])
+        .concat([`buvid3=${buvid3}`, `buvid4=${buvid4}`, 'bstar-web-lang=id'])
+        .join('; ');
+
+      // Strategy 1: Extract __playinfo__ from HTML (most reliable)
+      playinfoData = extractPlayinfoFromHtml(html);
+
+      // Strategy 2: Extract from __NEXT_DATA__
+      if (!playinfoData || (playinfoData.videos.length === 0 && playinfoData.audios.length === 0)) {
+        playinfoData = extractPlayinfoFromNextData(html);
+      }
+
+      // Strategy 3: Extract from __initialState (already parsed)
+      if (!playinfoData || (playinfoData.videos.length === 0 && playinfoData.audios.length === 0)) {
+        // Re-extract initialState for playinfo
+        const $ = cheerio.load(html);
+        $('script').each((_i, el) => {
+          const content = $(el).html() || '';
+          if (content.includes('__initialState')) {
+            const patterns = ['window.__initialState', '__initialState', 'self.__INITIAL_STATE__'];
+            for (const pattern of patterns) {
+              const extracted = extractIifeObject(content, pattern);
+              if (extracted) {
+                playinfoData = extractPlayinfoFromInitialState(extracted as Record<string, unknown>);
+                if (playinfoData && (playinfoData.videos.length > 0 || playinfoData.audios.length > 0)) {
+                  return false;
+                }
+              }
+            }
+          }
+        });
+      }
+
+      // Strategy 4: PlayURL API with page cookies (last resort)
+      if (!playinfoData || (playinfoData.videos.length === 0 && playinfoData.audios.length === 0)) {
+        playinfoData = await fetchPlayUrlApi(aid, pageCookieStr);
+      }
+
+      if (playinfoData && (playinfoData.videos.length > 0 || playinfoData.audios.length > 0)) {
         parsed.data.streaming = {
-          duration: playurlData.duration,
-          videos: playurlData.videos,
-          audios: playurlData.audios
+          duration: playinfoData.duration,
+          videos: playinfoData.videos,
+          audios: playinfoData.audios
+        };
+      } else {
+        parsed.data.streaming = {
+          duration: 0,
+          videos: [],
+          audios: [],
+          note: 'Tidak ada streaming URL yang tersedia. Video mungkin dibatasi wilayah atau memerlukan login.'
         };
       }
     }
@@ -346,6 +578,10 @@ async function detail(url: string): Promise<BstationResult> {
     };
   }
 }
+
+// ====================================================================
+// Parse HTML for video metadata
+// ====================================================================
 
 function parse(htmlContent: string): BstationResult {
   try {
@@ -417,7 +653,7 @@ function parse(htmlContent: string): BstationResult {
         arcs: (archiveStat.arcs as string) || ''
       };
 
-      // Streaming akan di-fill oleh fetchPlayUrl() di detail()
+      // Streaming will be filled by multi-strategy in detail()
       detailedData.streaming = {
         duration: 0,
         videos: [],
@@ -458,5 +694,78 @@ function parse(htmlContent: string): BstationResult {
   }
 }
 
+// ====================================================================
+// Shared playinfo fetcher for manifest route (multi-strategy)
+// ====================================================================
+
+export async function fetchPlayInfo(aid: string): Promise<PlayinfoData | null> {
+  // First try to fetch the page and extract playinfo from HTML
+  try {
+    const pageUrl = `https://www.bilibili.tv/video/${aid}`;
+    const buvid3 = generateBuvid3();
+    const buvid4 = generateBuvid4();
+
+    const resp = await fetch(pageUrl, {
+      method: 'GET',
+      headers: {
+        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'accept-language': 'id-ID,id;q=0.9,en-US;q=0.8',
+        'sec-ch-ua': '"Chromium";v="125", "Not.A/Brand";v="99"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-fetch-dest': 'document',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-site': 'none',
+        'upgrade-insecure-requests': '1',
+        'cookie': `buvid3=${buvid3}; buvid4=${buvid4}; bstar-web-lang=id`,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+      }
+    });
+
+    if (resp.ok) {
+      const html = await resp.text();
+      const setCookies = resp.headers.getSetCookie ? resp.headers.getSetCookie() : [];
+      const pageCookieStr = setCookies
+        .map(c => c.split(';')[0])
+        .concat([`buvid3=${buvid3}`, `buvid4=${buvid4}`, 'bstar-web-lang=id'])
+        .join('; ');
+
+      // Strategy 1: __playinfo__
+      let data = extractPlayinfoFromHtml(html);
+      if (data && (data.videos.length > 0 || data.audios.length > 0)) return data;
+
+      // Strategy 2: __NEXT_DATA__
+      data = extractPlayinfoFromNextData(html);
+      if (data && (data.videos.length > 0 || data.audios.length > 0)) return data;
+
+      // Strategy 3: __initialState
+      const $ = cheerio.load(html);
+      $('script').each((_i, el) => {
+        const content = $(el).html() || '';
+        if (content.includes('__initialState')) {
+          const patterns = ['window.__initialState', '__initialState', 'self.__INITIAL_STATE__'];
+          for (const pattern of patterns) {
+            const extracted = extractIifeObject(content, pattern);
+            if (extracted) {
+              data = extractPlayinfoFromInitialState(extracted as Record<string, unknown>);
+              if (data && (data.videos.length > 0 || data.audios.length > 0)) return false;
+            }
+          }
+        }
+      });
+      if (data && (data.videos.length > 0 || data.audios.length > 0)) return data;
+
+      // Strategy 4: API with cookies
+      data = await fetchPlayUrlApi(aid, pageCookieStr);
+      if (data && (data.videos.length > 0 || data.audios.length > 0)) return data;
+    }
+  } catch {
+    // Fall through to direct API
+  }
+
+  // Last resort: direct API call
+  return fetchPlayUrlApi(aid, '');
+}
+
 export { detail, parse, getQualityLabel };
-export type { BstationResult, VideoStream, AudioStream };
+export type { BstationResult, VideoStream, AudioStream, PlayinfoData };
